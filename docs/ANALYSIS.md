@@ -178,6 +178,25 @@ offer ──Learn more──> explaining ──> explained ──Chat──> (dr
 
 ---
 
+### 3.5 官方插件生效时自动让位（用户要求的额外能力）
+
+这是本项目唯一超出官方行为的用户请求能力：
+
+- 每次 plugin load 内第一次 `prompt.submit` / `turn.step` / `ui.render` 时，
+  调用 `$.settings.read()` 读取 merged settings；
+- 若 `enabledPlugins` 里官方 id（`cc-plugin-you-should-know@builtin` 及旧名）为 `true`，
+  则 `officialState.check = true`；
+- `prompt.submit` / `command.run` / `turn.step` / `ui.render` 立即 `next`，不 fork、不画 band；
+- 第一次发现时清掉本 session 残留的 `view`；
+- 不修改 `enabledPlugins`，不卸载自己，不持久化；官方关闭后 `/reload-plugins` 恢复；
+- 检测结果 per-load 缓存；运行中改 settings 需要 reload 才重新评估；
+- `settings.read` 失败/被拒绝时按“官方未启用”处理（catch false），sidelens 继续工作；
+- 这是 **enabled** 检测，不读取官方 `isAvailable` gate。官方 enabled 但不可用时也会让位，
+  属于保守策略。
+
+代价：scan 多一个 `settings.read`（官方 18 + 1 intentional）；parity scan 允许这一个额外
+call，其他新增 call 仍失败。
+
 ## 4. UI 结构
 
 官方在 `ui.render` 的 `{ component: "AbovePrompt" }` 里自绘一条 band。树形大致：
@@ -359,7 +378,7 @@ lib/telemetry.js    answered/proposed/explained/page 记录
 lib/text.js         控制序列清理、宽度、截断、换行
 lib/constants.js    所有阈值、颜色、标签、copy
 types/index.d.ts    sidelens.aboutOpen: StateFamily<string>
-tests/              28 个测试（11 行为 + 4 解析 + 13 官方差分）
+tests/              30 个测试（13 行为 + 4 解析 + 13 官方差分）
 scripts/parity/     官方模块提取、fixture 生成、tree 记录器
 tests/parity/       corpus + fixture + 官方差分测试
 ```
@@ -379,8 +398,9 @@ $ claude plugin validate .
       ui.render{component=AbovePrompt}, session.detach, session.end
   ❯ ./register.js calls: $.clock.after, $.env.get, $.model.fork, $.prompt.fill,
       $.prompt.read, $.prompt.submit, $.session.id, $.session.surfaces,
-      $.session.version, $.state.get, $.state.set, $.store.get, $.store.set,
-      $.telemetry.log, $.telemetry.mark, $.ui.invalidate, $.ui.resolve, $.ui.toast
+      $.session.version, $.settings.read, $.state.get, $.state.set,
+      $.store.get, $.store.set, $.telemetry.log, $.telemetry.mark,
+      $.ui.invalidate, $.ui.resolve, $.ui.toast
   ❯ env reads: CLAUDE_CODE_YOU_SHOULD_KNOW_DEBUG, USER_TYPE
   ❯ state reads/writes: sidelens.aboutOpen
   ✔ Validation passed
@@ -388,7 +408,7 @@ $ claude plugin validate .
 
 ### 9.2 行为测试（`claude plugin test`）
 
-15 个行为/纯函数测试覆盖（另有 §9.5 的 13 个官方差分测试）：
+17 个行为/纯函数测试覆盖（另有 §9.5 的 13 个官方差分测试）：
 
 1. 三方 model 的 fork 产生 offer，band 文本/按钮正确，Learn more 进入解释；
 2. 第 6 步才检查，重复建议 dedupe；
@@ -401,9 +421,11 @@ $ claude plugin validate .
 9. Desktop 去掉 hotkey/星号列，保留原生按钮；
 10. Chat in main session 生成带引用的 draft、填入 prompt、清 band、写入 known；
 11. 反馈行的 `4: Turn off suggestions` 直接关闭并填入禁用命令（本轮实测发现并修复的回归）；
-12–15. 纯函数测试：`learn: none`、完整 proposal、解释卡片/sketch、off 命令识别。
+12. 官方 `cc-plugin-you-should-know@builtin` 启用时，sidelens 不 fork、不画 band，并清掉旧 view；
+13. 官方旧名（`you-should-know@builtin`）同样触发让位；
+14–17. 纯函数测试：`learn: none`、完整 proposal、解释卡片/sketch、off 命令识别。
 
-结果：与 §9.5 合计 `28 pass, 0 fail`。
+结果：与 §9.5 合计 `30 pass, 0 fail`。
 
 ### 9.3 真实 provider 验证
 
@@ -479,8 +501,8 @@ session、Knew this already、Dismiss + 20 秒超时、Turn off 填入并执行�
   npm run parity:scan     # 对比 hooks / $ calls
   ```
 
-- static scan：`scripts/parity/scan.mjs` 运行 `claude plugin validate`，把 6 个 hooks、18 个
-  `$` 调用与 fixture 里的官方 scan 清单做集合对比；
+- static scan：`scripts/parity/scan.mjs` 运行 `claude plugin validate`，把 6 个 hooks、19 个
+  `$` 调用（官方 18 + 唯一 intentional `settings.read`）与 fixture 里的官方 scan 清单做集合对比；
 - 唯一被 normalization 掉的已知差异是禁用命令
   （官方 `cc-plugin-you-should-know@builtin` ↔ `sidelens`）。
 - 覆盖范围、更新流程和未覆盖项见 [PARITY.md](PARITY.md)。

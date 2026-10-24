@@ -6,3 +6,5 @@ node_modules/
 .claude-plugin/types/.gitignore
 .claude-plugin/types/tsconfig.json
 tsconfig.json
+
+.serena/

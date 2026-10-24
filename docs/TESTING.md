@@ -149,3 +149,12 @@ the built-in mod and `sidelens` both correctly produce no suggestion.
 The computer-use run above is the end-to-end check. The deterministic,
 fixture-backed comparison against the official module is documented in
 [PARITY.md](PARITY.md) and runs as part of `npm run test`.
+
+
+## Official-priority suspension
+
+The CUA session above ran with the official mod unavailable, so the
+official-priority path did not execute there. It is covered deterministically by
+`tests/sidelens.test.ts` with `enabledPlugins` stubs: the official id and its
+older alias both suppress the fork and band, and a stale sidelens view is
+cleared.

@@ -108,8 +108,19 @@ manifest/plugin name is `sidelens`, and `defaultEnabled` is false. The parity
 suite therefore proves the core logic and presentation, not that the plugin
 metadata is identical.
 
+One requested behavior is a deliberate addition, not an official behavior:
+when `enabledPlugins` says the official You should know mod is enabled,
+sidelens soft-suspends for that plugin load and lets the official mod draw. It
+is tested in `tests/sidelens.test.ts`, not against the official fixture, and it
+adds exactly one `settings.read` call to the static scan. `scripts/parity/scan.mjs`
+allows that one extra and fails on any other extra or missing call. If the
+settings read fails or is denied, sidelens treats the official mod as disabled
+and stays active.
+
 ## What this suite does not prove
 
+- **The official-priority suspension** is covered by the mod harness tests, not by a
+  differential replay: it is a project-specific addition.
 - **Hook orchestration and async timing** are exercised by
   `tests/sidelens.test.ts` and the real CUA run, not by a differential replay.
   A differential hook-trace harness would require driving the official module's

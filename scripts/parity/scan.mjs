@@ -50,6 +50,22 @@ function compare(name, actual, expected) {
   return false
 }
 
+const INTENTIONAL_EXTRA_CALLS = new Set(['settings.read'])
+
 const hooksOk = compare('hooks', hooks, officialHooks)
-const callsOk = compare('calls', uniqueCalls, officialCalls)
+const extraCalls = uniqueCalls.filter((call) => !officialCalls.includes(call))
+const missingCalls = officialCalls.filter((call) => !uniqueCalls.includes(call))
+const unexpectedCalls = extraCalls.filter((call) => !INTENTIONAL_EXTRA_CALLS.has(call))
+const callsOk = missingCalls.length === 0 && unexpectedCalls.length === 0
+if (callsOk) {
+  console.log(
+    `parity calls: ok (${uniqueCalls.length}; intentional extra: ${
+      extraCalls.length === 0 ? 'none' : extraCalls.join(', ')
+    })`,
+  )
+} else {
+  console.error('parity calls: mismatch')
+  if (missingCalls.length > 0) console.error(`  missing: ${missingCalls.join(', ')}`)
+  if (unexpectedCalls.length > 0) console.error(`  unexpected: ${unexpectedCalls.join(', ')}`)
+}
 if (!hooksOk || !callsOk) process.exit(1)

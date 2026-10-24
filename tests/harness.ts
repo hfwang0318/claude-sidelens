@@ -7,6 +7,7 @@ export function install(
   options: {
     surfaces?: string[]
     env?: Record<string, string>
+    enabledPlugins?: Record<string, boolean>
     fork?: (request: { prompt: string }) => any
     uiRender?: () => any
   } = {},
@@ -39,6 +40,9 @@ export function install(
     marks.push(e)
     return { value: undefined }
   })
+  on('settings.read', () => ({
+    value: { enabledPlugins: options.enabledPlugins ?? {} },
+  }))
   on('prompt.read', () => ({ value: { text: promptText, cursor: promptText.length } }))
   on('prompt.fill', (_$: unknown, e: { text: string }) => {
     fills.push(e.text)

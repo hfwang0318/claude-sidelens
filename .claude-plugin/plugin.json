@@ -1,6 +1,6 @@
 {
   "name": "sidelens",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "You should know for every model provider: a side agent watches longer tasks and surfaces things worth knowing above the prompt.",
   "defaultEnabled": false,
   "author": {

@@ -35,12 +35,13 @@ isAvailable = complianceTaintsSettled()
 - 插件状态 key：`sidelens.aboutOpen`
 - 禁用命令：`/plugin disable sidelens`
 - `defaultEnabled: false`（与官方一致，需要显式启用）
-- 测试：**28 pass, 0 fail**
-  - 11 个 sidelens 行为测试
+- 测试：**30 pass, 0 fail**
+  - 13 个 sidelens 行为测试
   - 4 个 parser 单元测试
   - 13 个官方差分测试
 - `claude plugin validate .`：通过
-- `npm run parity:check`：fixture 与已安装 2.1.308 一致，6 hooks / 18 calls 一致
+- `npm run parity:check`：fixture 与已安装 2.1.308 一致，6 hooks / 19 calls 一致
+  （官方 18 + 本项目 intentional extra `settings.read`）
 - 真实三方模型：已用 `zhipu/glm-5.3[1m]` + Claude Code Router 在 iTerm2 中跑通
 
 ---
@@ -55,9 +56,10 @@ isAvailable = complianceTaintsSettled()
 - **6 个 hooks 不变**：
   `prompt.submit`、`command.run{command=plugin}`、`turn.step`、`ui.render{component=AbovePrompt}`、
   `session.detach`、`session.end`。
-- **18 个 `$` 调用不变**：clock.after、env.get、model.fork、prompt.fill、prompt.read、
+- **官方 18 个 `$` 调用不变**：clock.after、env.get、model.fork、prompt.fill、prompt.read、
   prompt.submit、session.id、session.surfaces、session.version、state.get、state.set、
   store.get、store.set、telemetry.log、telemetry.mark、ui.invalidate、ui.resolve、ui.toast。
+  本项目额外只有 `settings.read`，用于官方插件自动让位（见 3.4）。
 - **节奏和常量不变**：每 6 个 model step 检查；连续 2 个 prompt 清除；20 秒反馈窗口；
   seen 50、sessions 32、3 天保留、looksToSkip 16、typedPastInARow 2。
 - **状态机不变**：`offer → explaining → explained / failed`，`offer → asked → timeout`，
@@ -68,6 +70,9 @@ isAvailable = complianceTaintsSettled()
   `you_should_know_explained`、`learn_page` 及字段名。
 - **Disable 两步式**：第一次 arm，第二次填 `/plugin disable sidelens`，不自动提交。
 - **Dismiss 不等于 Disable**：Dismiss 只清当前建议并进入反馈，不关闭插件。
+- **官方插件优先**：若 `enabledPlugins` 中官方 You should know 已启用，sidelens 在本次
+  插件加载中软暂停（不 fork、不画 band、清掉旧 view），把界面让给官方；官方关闭并
+  `/reload-plugins` 后恢复。这是用户要求的 intentional extra。
 
 ### 3.2 工程契约
 
@@ -79,7 +84,8 @@ isAvailable = complianceTaintsSettled()
   key 固定为 `aboutOpen`。
 - **不要添加 `isAvailable`**：这是本项目唯一的核心差异；加回去会重新引入官方模型限制。
 - **不要改 `defaultEnabled`**：官方是 opt-in；保持 `false`。
-- **不要新增文件/网络/process 权限**：mod 的 scan 会暴露它们，也会破坏 parity。
+- **不要额外新增文件/网络/process 权限**：mod 的 scan 会暴露它们，也会破坏 parity。
+  唯一允许的额外 API 是 `settings.read`，只用于官方插件自动让位。
 - **`types/index.d.ts` 是状态契约**：`sidelens.aboutOpen: StateFamily<string>`。
 - **`tests/parity/fixtures/official.mjs` 是生成文件**：不要手改，使用
   `npm run parity:update` 重新生成。
@@ -95,6 +101,22 @@ isAvailable = complianceTaintsSettled()
 parity 测试只 normalization 禁用命令：
 官方 `/plugin disable cc-plugin-you-should-know@builtin` ↔ `sidelens` `/plugin disable sidelens`。
 其他内容（prompt、parser、state、UI、telemetry）不允许 normalization。
+
+### 3.4 用户要求的 intentional extra：官方插件优先
+
+用户要求：官方 You should know 生效时，sidelens 临时让位。实现是：
+
+- `settings.read()` 读取 merged settings 的 `enabledPlugins`；
+- 命中 `OFFICIAL_PLUGIN_IDS`（`cc-plugin-you-should-know@builtin` 及旧名别名）时，
+  本次 plugin load 内 `officialState.check = true`；
+- `turn.step`、`ui.render`、`prompt.submit`、`command.run` 直接走 `next`，不 fork、不画 band；
+- 第一次发现时清掉本 session 残留的 `view`；
+- 不写 `enabledPlugins`，不卸载自己，不持久化；官方关闭并 `/reload-plugins` 后恢复；
+- 缓存 per-load；settings 改变后必须 reload 才生效；
+- `settings.read` 失败/被拒绝时按“官方未启用”处理（catch false），sidelens 继续工作。
+
+这是新增能力，扫描会多一个 `settings.read`（19 calls）；`parity:scan` 允许这一个
+intentional extra，其他新增 call 仍然失败。
 
 ---
 
@@ -236,10 +258,11 @@ npm run test              # 观察哪些 case/path 变化
 提交前逐项确认：
 
 - [ ] 没有改变官方 prompt 文本；`npm run test` 的 prompt 用例通过。
-- [ ] 没有新增 hooks / `$` 调用 / env / state / file 权限；`npm run parity:scan` 6/18 通过。
+- [ ] 没有新增 hooks / `$` 调用 / env / state / file 权限；`npm run parity:scan` 6/19 通过
+      （官方 18 + 唯一 intentional `settings.read`）。
 - [ ] 没有添加 `isAvailable` 或把 `defaultEnabled` 改为 true。
 - [ ] 所有 `$` 调用仍在 `hooks/register.js`；`lib/` 保持纯函数。
-- [ ] `npm run validate` 通过；`npm run test` 28+ pass。
+- [ ] `npm run validate` 通过；`npm run test` 30+ pass。
 - [ ] 如果官方版本变了：fixture 已更新、版本号/文档已更新、`parity:check` 通过。
 - [ ] 如果改了可观察行为：ANALYSIS/PARITY/README 已同步。
 - [ ] 没有手改 `tests/parity/fixtures/official.mjs`。

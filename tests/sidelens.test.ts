@@ -216,3 +216,29 @@ test('Turn off suggestions on the feedback row turns suggestions off at once', a
     ),
   ).toBe(true)
 })
+
+test('sidelens yields while the official You should know mod is enabled', async ($, on) => {
+  const harness = install(on, {
+    fork: () => OFFER,
+    enabledPlugins: { 'cc-plugin-you-should-know@builtin': true },
+  })
+  harness.saved.set('sessions', [
+    { id: 's1', view: { kind: 'offer', line: 'A stale offer.', shownAt: 1 } },
+  ])
+
+  await trigger($, harness, { index: 0, turnId: 't1' })
+  expect(harness.forks).toHaveLength(0)
+  expect((harness.saved.get('sessions') as any[])[0].view).toBeUndefined()
+
+  const ui = await mountBand($)
+  expect(JSON.stringify(await ui.drawn())).toContain('engine')
+})
+
+test('official plugin aliases also suspend sidelens', async ($, on) => {
+  const harness = install(on, {
+    fork: () => OFFER,
+    enabledPlugins: { 'you-should-know@builtin': true },
+  })
+  await trigger($, harness)
+  expect(harness.forks).toHaveLength(0)
+})

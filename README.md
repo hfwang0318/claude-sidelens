@@ -19,13 +19,21 @@ continue the conversation in the main session.
 The observer prompt, parsing rules, six-step cadence, two-prompt survival rule,
 20-second feedback window, store schema, telemetry records, labels, hotkeys,
 colours, and terminal/desktop layouts are ported from Claude Code 2.1.308's
-`cc-plugin-you-should-know` mod. The only behavioural changes are the plugin's own
-name in `$.state` and in the disable command, and the removal of the
-`tengu_jolly_dewdrop` / compliance-taint availability gate. See
+`cc-plugin-you-should-know` mod. The behavioural changes are the plugin's own
+name in `$.state` and in the disable command, the removal of the
+`tengu_jolly_dewdrop` / compliance-taint availability gate, and one requested
+addition: when the official mod is enabled, sidelens soft-suspends for that
+plugin load and lets the official mod draw. See
 [the analysis](docs/ANALYSIS.md) for the full comparison.
 
 For development rules, the current parity baseline, and a full document index,
 read [CLAUDE.md](CLAUDE.md).
+
+If the official You should know mod is enabled (`enabledPlugins` contains its
+id), sidelens yields on load: it does not fork, does not draw the band, and
+clears any stale suggestion for that session. This is the one requested
+addition on top of official behavior; disable the official mod and run
+`/reload-plugins` to let sidelens resume.
 
 ## Requirements
 
@@ -137,6 +145,8 @@ The plugin stores only plain JSON under its own `$.store` keys (`sessions`,
 | Name in state | `cc-plugin-you-should-know` | `sidelens` |
 | Disable command | `/plugin disable cc-plugin-you-should-know@builtin` | `/plugin disable sidelens` |
 | Default | Disabled | Disabled (`defaultEnabled: false`) |
+| Official mod enabled | — | sidelens soft-suspends and yields the band |
+| Extra API | — | `settings.read`, only for that detection |
 | Everything else | — | Ported unchanged |
 
 The compliance exclusions cannot be read through the public mods API. If your

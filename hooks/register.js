@@ -18,6 +18,7 @@ import {
   LOOKS_TO_SKIP_MAX,
   OFF_BOX_BUSY,
   OFF_COMMAND,
+  OFFICIAL_PLUGIN_IDS,
   RESPOND_BLOCKED,
   RESPOND_BOX_BUSY,
   RESPOND_NOT_FILLED,
@@ -122,6 +123,36 @@ async function toggleAbout($, { sid, key }) {
   }
 }
 
+async function officialPluginEnabled($) {
+  const settings = await $.settings.read()
+  const enabled = settings?.enabledPlugins
+  if (enabled === null || typeof enabled !== 'object') return false
+  return OFFICIAL_PLUGIN_IDS.some((id) => enabled[id] === true)
+}
+
+
+async function isOfficialEnabled($, state) {
+  if (state.check === undefined) {
+    state.check = officialPluginEnabled($).catch(() => false)
+  }
+  return state.check
+}
+
+async function clearForOfficial($, cleared) {
+  try {
+    const sid = await $.session.id()
+    if (cleared.has(sid)) return
+    cleared.add(sid)
+    const sessions = await $.store.get('sessions')
+    const row = rowOf(sessions, sid)
+    if (row?.view !== undefined) {
+      await $.store.set('sessions', withRow(sessions, { ...row, view: undefined }))
+    }
+  } catch {
+    return
+  }
+}
+
 async function confirmOffRecord($, { sid, confirmed, isConfirmed }) {
   const sessions = await $.store.get('sessions')
   const row = rowOf(sessions, sid)
@@ -197,7 +228,11 @@ export function register(on) {
   const watched = new Set()
   const bridged = new Set()
 
+  const suspendedCleared = new Set()
+  const officialState = { check: undefined }
+
   on('prompt.submit', async ($, e, next) => {
+    if (await isOfficialEnabled($, officialState)) return next(e)
     const origin = e.origin.kind
     if (isComposer(origin)) {
       void settleOff($, offState, { isConfirmed: isOffCommand(e.text) })
@@ -217,6 +252,7 @@ export function register(on) {
   })
 
   on('command.run', { command: 'plugin' }, async ($, e, next) => {
+    if (await isOfficialEnabled($, officialState)) return next(e)
     if (isComposer(e.origin.kind) && isOffCommand(`/${e.command} ${e.args}`)) {
       await confirmOffCommand($, offState)
     }
@@ -225,6 +261,10 @@ export function register(on) {
 
   on('turn.step', async function* ($, e, next) {
     if (e.agentId !== undefined) return yield* next(e)
+    if (await isOfficialEnabled($, officialState)) {
+      await clearForOfficial($, suspendedCleared)
+      return yield* next(e)
+    }
 
     async function rememberSeen() {
       return stringLines(await $.store.get('seen'))
@@ -436,6 +476,7 @@ export function register(on) {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (await isOfficialEnabled($, officialState)) return next(e)
     const ui = withSurface(e.surface, $.ui.resolve(e))
     const sid = await $.session.id()
     watched.add(e.surface)
