@@ -1,0 +1,4 @@
+{
+  "description": "sidelens: the You should know side agent for third-party models",
+  "modules": ["./register.js"]
+}

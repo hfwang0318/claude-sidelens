@@ -1,0 +1,14 @@
+{
+  "name": "claude-sidelens",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Parity and development scripts for the sidelens Claude Code mod",
+  "scripts": {
+    "validate": "claude plugin validate .",
+    "test": "claude plugin test .",
+    "parity:update": "node scripts/parity/update.mjs",
+    "parity:check": "node scripts/parity/update.mjs --check && node scripts/parity/scan.mjs",
+    "parity:scan": "node scripts/parity/scan.mjs"
+  }
+}

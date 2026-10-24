@@ -1,0 +1,8 @@
+.DS_Store
+node_modules/
+.claude-plugin/types/claude-code/
+.claude-plugin/types/claude-code-tools/
+.claude-plugin/types/claude-code-mcp/
+.claude-plugin/types/.gitignore
+.claude-plugin/types/tsconfig.json
+tsconfig.json
