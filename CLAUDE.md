@@ -145,7 +145,12 @@ docs/                       分析、测试、parity 文档
 ## 5. 常用命令
 
 ```bash
-# 安装/加载
+# 从 GitHub 安装（推荐）
+claude plugin marketplace add hfwang0318/claude-sidelens
+claude plugin install sidelens@claude-sidelens
+claude plugin enable sidelens@claude-sidelens
+
+# 开发时用目录加载
 claude --plugin-dir /path/to/claude-sidelens
 
 # 在会话里启用（defaultEnabled=false）

@@ -54,13 +54,24 @@ claude --plugin-dir /path/to/claude-sidelens
 /reload-plugins
 ```
 
-Or install it from a marketplace and enable it:
+Or install it straight from GitHub:
+
+```bash
+claude plugin marketplace add hfwang0318/claude-sidelens
+claude plugin install sidelens@claude-sidelens
+claude plugin enable sidelens@claude-sidelens
+```
+
+Inside a session, the same steps are:
 
 ```text
-/plugin install sidelens@your-marketplace
-/plugin enable sidelens@your-marketplace
+/plugin marketplace add hfwang0318/claude-sidelens
+/plugin install sidelens@claude-sidelens
+/plugin enable sidelens@claude-sidelens
 /reload-plugins
 ```
+
+The marketplace name is `claude-sidelens`; the plugin name is `sidelens`.
 
 The `/plugin` menu also works: open **Installed**, select `sidelens`, choose
 **Enable plugin**, and run `/reload-plugins` as prompted.
