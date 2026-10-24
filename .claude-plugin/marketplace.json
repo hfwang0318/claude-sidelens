@@ -1,0 +1,17 @@
+{
+  "name": "claude-sidelens",
+  "description": "sidelens: You should know for every model provider",
+  "owner": {
+    "name": "hfwang0318"
+  },
+  "plugins": [
+    {
+      "name": "sidelens",
+      "source": "./",
+      "description": "You should know for every model provider: a side agent watches longer tasks and surfaces things worth knowing above the prompt.",
+      "defaultEnabled": false,
+      "category": "productivity",
+      "tags": ["you-should-know", "third-party-models", "mod"]
+    }
+  ]
+}
