@@ -117,6 +117,15 @@ allows that one extra and fails on any other extra or missing call. If the
 settings read fails or is denied, sidelens treats the official mod as disabled
 and stays active.
 
+## The audit layer
+
+The audit extension adds no hook and no `$` call of its own, so the scan above is
+unchanged: 6 hooks, 19 calls, one intentional extra (`settings.read`). It reads the
+finished turn from the `turn.step` generator's return value, is off unless
+`SIDELENS_AUDIT` is set, and is documented in [AUDIT.md](AUDIT.md). Parity therefore
+covers the official path exactly as before; nothing here proves the audit's judgement,
+which is measured separately under `eval/`.
+
 ## What this suite does not prove
 
 - **The official-priority suspension** is covered by the mod harness tests, not by a

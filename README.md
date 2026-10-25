@@ -35,6 +35,25 @@ clears any stale suggestion for that session. This is the one requested
 addition on top of official behavior; disable the official mod and run
 `/reload-plugins` to let sidelens resume.
 
+## Optional: the audit layer
+
+**Experimental and unproven — leave it off unless you are testing it.** It is off
+by default, and separate from everything above. When switched on, `sidelens`
+also reviews the turn that just ended: it takes the request's clauses, the
+mechanical record of what the turn did, and the final message, and asks one
+question — is anything claimed that the record does not support?
+
+```bash
+export SIDELENS_AUDIT=1              # all dimensions
+export SIDELENS_AUDIT_CLAIMS=1       # or one at a time
+```
+
+It adds no hook and no `$` call: the evidence comes from the `turn.step`
+generator's return value. What it can and cannot judge is spelled out in
+[docs/AUDIT.md](docs/AUDIT.md), including the capabilities that were measured and
+rejected. The official behaviour is unchanged either way — `npm run parity:check`
+still sees 6 hooks and 19 calls.
+
 ## Requirements
 
 - Claude Code **2.1.287 or later** (mods are required; the parity target is

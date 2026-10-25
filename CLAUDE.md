@@ -28,6 +28,17 @@ isAvailable = complianceTaintsSettled()
 
 ---
 
+## 1.5 两层定位（2026-10 起）
+
+- **核心层**与官方逐字节一致：prompt、6 个 hooks、19 个 `$` 调用、view/telemetry/节奏，
+  由 `parity:check` 守住。核心层永不因扩展而改动。
+- **审查层**（`audit`）是**实验性、未证实**的扩展，默认关闭，不建议生产启用
+  （结论与数据见 [docs/AUDIT.md](docs/AUDIT.md) 的 Verdict 一节）。它不新增 hook、
+  不新增 `$` 调用（证据取自 `turn.step` 的 `yield* next(e)` 返回值里的 `answer`/`toolUses`），
+  默认关闭，开关是 `SIDELENS_AUDIT` 与三个维度变量。
+- 判定一个审查能力能不能做，看四条：证据在不在记录里、一次推理能否判、误判能否压住、
+  结论能否被机械核验。达不到的写进 AUDIT.md 的“不可行”表，不做半成品。
+
 ## 2. 当前基线
 
 - Claude Code 目标版本：**2.1.308**（最低 2.1.287）
@@ -35,10 +46,12 @@ isAvailable = complianceTaintsSettled()
 - 插件状态 key：`sidelens.aboutOpen`
 - 禁用命令：`/plugin disable sidelens`
 - `defaultEnabled: false`（与官方一致，需要显式启用）
-- 测试：**30 pass, 0 fail**
+- 测试：**43 pass, 0 fail**
   - 13 个 sidelens 行为测试
   - 4 个 parser 单元测试
   - 13 个官方差分测试
+  - 10 个审查层纯函数测试（条款切分、证据包、协议、开关）
+  - 3 个审查层接线测试（默认关闭、空 turn 不审）
 - `claude plugin validate .`：通过
 - `npm run parity:check`：fixture 与已安装 2.1.308 一致，6 hooks / 19 calls 一致
   （官方 18 + 本项目 intentional extra `settings.read`）
@@ -133,10 +146,15 @@ lib/parse.js                proposal / explanation 解析、tag、off 命令
 lib/text.js                 宽度、截断、换行、控制序列清理
 lib/data.js                 session row、view 状态、band 可见性
 lib/telemetry.js            answered / explained / proposed / page 记录
-lib/ui.js                   AbovePrompt 树、about、fit、Markdown/Code
+lib/ui.js                   AbovePrompt 树、about、fit、Markdown/Code、audit 行
+lib/audit.js                审查层：条款切分、维度开关、prompt 组装、三态解析
+lib/ledger.js               审查层：从 step 结果提取文件/命令/读取摘要
 types/index.d.ts            sidelens.aboutOpen 状态声明
 tests/sidelens.test.ts      行为测试（fork/UI/状态/禁用）
 tests/parse.test.ts         parser 单元测试
+tests/audit.test.ts         审查层纯函数测试
+tests/audit-layer.test.ts   审查层接线测试
+eval/                       supervisor 轨迹 → 用例 → 离线评测
 tests/parity/               官方差分测试
 scripts/parity/             官方模块提取、fixture 生成、scan、tree recorder
 docs/                       分析、测试、parity 文档
@@ -290,6 +308,7 @@ npm run test              # 观察哪些 case/path 变化
 | [README.md](README.md) | 安装、启用、使用、差异、开发命令 | 第一次接触项目 |
 | [docs/ANALYSIS.md](docs/ANALYSIS.md) | 官方源码级分析、状态机、prompt、模型调用、逐项对照、CUA 结果 | 需要理解“为什么这样实现” |
 | [docs/PARITY.md](docs/PARITY.md) | 官方差分测试的覆盖范围、fixture 生成、升级流程、未覆盖项 | 修改核心逻辑或升级 Claude Code |
+| [docs/AUDIT.md](docs/AUDIT.md) | 审查层：能力矩阵（含不可行项）、开关、协议、评测方法与结果 | 改审查层或判断某能力能不能做 |
 | [docs/TESTING.md](docs/TESTING.md) | 真实 iTerm2 + 三方模型的 CUA 测试记录、截图、发现的问题 | 验证真实交互/UI |
 | [tests/parity/corpus.mjs](tests/parity/corpus.mjs) | 差分测试输入 corpus | 加解析/UI/状态用例 |
 | [tests/parity/official.test.ts](tests/parity/official.test.ts) | 我方实现 vs 官方 fixture 的断言 | 看某个 case 为什么失败 |
