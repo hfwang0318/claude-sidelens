@@ -9,6 +9,7 @@ export function install(
     env?: Record<string, string>
     enabledPlugins?: Record<string, boolean>
     fork?: (request: { prompt: string }) => any
+    step?: (e: any) => any
     uiRender?: () => any
   } = {},
 ) {
@@ -29,9 +30,10 @@ export function install(
   on('session.id', () => ({ value: 's1' }))
   on('session.surfaces', () => ({ value: options.surfaces ?? ['terminal'] }))
   on('session.version', () => ({ value: { base: '2.1.308', builtAt: '2026-10-01T00:00:00Z' } }))
-  on('env.get', (_$: unknown, e: { name?: string; key?: string }) => ({
-    value: (options.env ?? {})[e.name ?? e.key ?? ''],
-  }))
+  on('env.get', (_$: unknown, e: any) => {
+    const name = typeof e === 'string' ? e : (e?.name ?? e?.key ?? '')
+    return { value: (options.env ?? {})[name] }
+  })
   on('telemetry.log', (_$: unknown, e: any) => {
     events.push(e)
     return { value: undefined }
@@ -72,6 +74,7 @@ export function install(
     }
   })
   on('turn.step', async function* (_$: unknown, e: any) {
+    if (options.step) return options.step(e)
     return {
       turnId: e.turnId,
       index: e.index,
