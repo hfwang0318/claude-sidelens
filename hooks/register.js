@@ -59,6 +59,16 @@ import {
   parseProposedLine,
   tagOf,
 } from '../lib/parse.js'
+import {
+  auditItems,
+  assertionsOf,
+  buildAuditPrompt,
+  enabledDimensions,
+  isQuestionOnly,
+  parseAudit,
+  splitClauses,
+} from '../lib/audit.js'
+import { extractLedger, finalTextOf, requestOf } from '../lib/ledger.js'
 import { explainPrompt, proposePrompt } from '../lib/prompts.js'
 import {
   answered as answeredRecord,
@@ -73,6 +83,7 @@ import { fitCardsToColumns, isDebugOn } from '../lib/text.js'
 import {
   aboutFrame,
   askedRow,
+  auditRow,
   debugRows,
   explainedAskedRow,
   explainedRow,
@@ -82,6 +93,7 @@ import {
   offerRow,
   readyRow,
   respondDraft,
+  h,
   withSurface,
 } from '../lib/ui.js'
 
@@ -217,6 +229,107 @@ async function confirmOffCommand($, state) {
   }
 }
 
+// The audit layer reads its switches from the environment.  Each name is a
+// literal because the plugin scanner requires that.
+async function auditDimensions($) {
+  const raw = {
+    SIDELENS_AUDIT: await $.env.get('SIDELENS_AUDIT').catch(() => undefined),
+    SIDELENS_AUDIT_COVERAGE: await $.env.get('SIDELENS_AUDIT_COVERAGE').catch(() => undefined),
+    SIDELENS_AUDIT_CLAIMS: await $.env.get('SIDELENS_AUDIT_CLAIMS').catch(() => undefined),
+    SIDELENS_AUDIT_CONFLICT: await $.env.get('SIDELENS_AUDIT_CONFLICT').catch(() => undefined),
+  }
+  return enabledDimensions(raw)
+}
+
+const AUDIT_TTL_MS = 10 * 60 * 1000
+const auditKey = (sid) => `audit:${sid}`
+
+async function auditPending($, sid) {
+  try {
+    return (await $.store.get(auditKey(sid))).value
+  } catch {
+    return undefined
+  }
+}
+
+async function clearAudit($, sid) {
+  try {
+    await $.store.set(auditKey(sid), undefined)
+  } catch {
+    return
+  }
+  $.ui.invalidate('ui.render')
+}
+
+// One audit per turn, fired while the person types the next prompt: the finished
+// turn is fully recorded by then, and no result races their typing.
+//
+// The evidence comes from the turn's own step results (`answer` and `toolUses`
+// on the generator's return value), so the audit needs no extra API call, no
+// extra hook, and works on the 2.1.308 contract.
+async function runAudit($, sid, request, steps) {
+  const dimensions = await auditDimensions($)
+  if (dimensions.length === 0) return
+  if (steps.length === 0) return
+
+  const messages = []
+  for (const step of steps) {
+    const content = (step.toolUses ?? []).map((use, index) => ({
+      type: 'tool_use',
+      id: `${step.turnId ?? 't'}-${index}`,
+      name: use?.name ?? use?.tool ?? '',
+      input: use?.input ?? use,
+    }))
+    if (typeof step.answer === 'string' && step.answer.trim() !== '') {
+      content.push({ type: 'text', text: step.answer })
+    }
+    if (content.length > 0) messages.push({ role: 'assistant', content })
+  }
+
+  const ledger = extractLedger(messages)
+  if (ledger.counts.files === 0 && ledger.counts.commands === 0) return
+  const split = splitClauses(request)
+  if (isQuestionOnly(split.clauses)) return
+
+  const seenKey = `auditSeen:${sid}`
+  try {
+    if ((await $.store.get(seenKey)).value === steps.length) return
+    await $.store.set(seenKey, steps.length)
+  } catch {
+    return
+  }
+
+  const finalText = finalTextOf(messages)
+  const assertions = assertionsOf(finalText, ledger)
+  const items = auditItems({ clauses: split.clauses, assertions, dimensions })
+  const result = await $.model
+    .fork({
+      prompt: buildAuditPrompt({
+        clauses: split.clauses,
+        assertions,
+        ledger: ledger.text,
+        finalText,
+        dimensions,
+        language: 'the language of the request',
+      }),
+    })
+    .catch(() => undefined)
+  if (result?.isAnswered !== true) return
+  const parsed = parseAudit(result.text, items, { clauses: split.clauses, finalText })
+  if (parsed.kind !== 'finding') return
+  try {
+    await $.store.set(auditKey(sid), {
+      line: parsed.line,
+      type: parsed.type,
+      at: Date.now(),
+      findings: parsed.clauses,
+    })
+  } catch {
+    return
+  }
+  $.ui.invalidate('ui.render')
+}
+
 export function register(on) {
   const inFlight = new Map()
   const explaining = new Set()
@@ -228,6 +341,8 @@ export function register(on) {
   const watched = new Set()
   const bridged = new Set()
 
+  const auditSteps = new Map()
+  const auditRequest = new Map()
   const suspendedCleared = new Set()
   const officialState = { check: undefined }
 
@@ -236,6 +351,16 @@ export function register(on) {
     const origin = e.origin.kind
     if (isComposer(origin)) {
       void settleOff($, offState, { isConfirmed: isOffCommand(e.text) })
+      void $.session
+        .id()
+        .then((sid) => {
+          // The request being audited is the previous turn's, not the one being
+          // typed now.
+          const previous = auditRequest.get(sid)
+          auditRequest.set(sid, e.text)
+          return runAudit($, sid, previous ?? '', auditSteps.get(sid) ?? [])
+        })
+        .catch(() => undefined)
       try {
         if ((await $.session.surfaces()).length > 0) {
           const sid = await $.session.id()
@@ -472,7 +597,18 @@ export function register(on) {
       })
       .catch(() => undefined)
 
-    return yield* next(e)
+    const finished = yield* next(e)
+    if (finished !== undefined && finished !== null) {
+      void $.session
+        .id()
+        .then((sid) => {
+          const held = auditSteps.get(sid) ?? []
+          held.push({ answer: finished.answer, toolUses: finished.toolUses, turnId: e.turnId })
+          auditSteps.set(sid, held.slice(-40))
+        })
+        .catch(() => undefined)
+    }
+    return finished
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -839,7 +975,19 @@ export function register(on) {
     }
 
     const tree = renderView()
-    return checks.length > 0 && !e.props.hasSurvey ? debugRows(ui, checks, tree) : (tree ?? next(e))
+    const base =
+      checks.length > 0 && !e.props.hasSurvey ? debugRows(ui, checks, tree) : tree
+    const pendingAudit = await auditPending($, sid)
+    if (pendingAudit === undefined) return base ?? next(e)
+    if (Date.now() - (pendingAudit.at ?? 0) > AUDIT_TTL_MS) {
+      await clearAudit($, sid)
+      return base ?? next(e)
+    }
+    const row = auditRow(ui, {
+      line: pendingAudit.line,
+      onDismiss: () => void clearAudit($, sid),
+    })
+    return h(ui.Box, { flexDirection: 'column' }, row, base ?? '')
   })
 
   on('session.detach', async ($, e, next) => {

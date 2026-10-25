@@ -50,6 +50,8 @@ function compare(name, actual, expected) {
   return false
 }
 
+// The audit layer reads the turn's own step results, so it needs no call that
+// the official mod does not already make.  The one extra remains the yield check.
 const INTENTIONAL_EXTRA_CALLS = new Set(['settings.read'])
 
 const hooksOk = compare('hooks', hooks, officialHooks)
