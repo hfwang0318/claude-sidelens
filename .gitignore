@@ -8,3 +8,11 @@ node_modules/
 tsconfig.json
 
 .serena/
+
+# Generated eval cases (derived from ../claude-supervisor; run eval/from-supervisor.mjs)
+eval/cases/
+
+# Generated corpora and reports (never commit supervisor-derived transcripts)
+eval/synth/
+eval/control/
+eval/report/
