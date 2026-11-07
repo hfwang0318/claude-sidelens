@@ -145,10 +145,11 @@ intentional extra，其他新增 call 仍然失败。
 - 开启时 `showExplanation()` 在第一次解释（iteration 1）写入 view 后调用
   `autoChat()`：复用官方已有的 `$.prompt.submit` 提交 `respondDraft`，不改写输入框，
   因此用户正在输入的草稿不受影响；
-- 解释面板保留在屏幕上（不 clear、不写 `known`），用户仍可用 `1: Understood` /
-  `0: Dismiss`；此时不再渲染 `2: Chat in main session`，避免重复发送；
-- telemetry 记为 `respond`；提交被 drop 或抛出时 toast `AUTO_SEND_FAILED`，
-  不记 answered；
+- 发送成功后与官方 Chat 路径一致：记 `respond`、写入 `known`、清 view，解释面板关闭；
+  因此同一条建议不会出现第二条 answered 事件（`yes_explain` + `respond`，与官方
+  `yes_explain` + Chat 等价）；
+- 发送未完成时 `responding` 阻止 `Chat in main session` 并发触发；发送被 drop 或
+  抛出时 toast `AUTO_SEND_FAILED`、不记 answered，面板保留，用户可按 2 手动放入输入框；
 - 关闭（默认）时行为与官方逐字节一致：解释出现后只等用户选择，
   fill/提交语义不变。
 

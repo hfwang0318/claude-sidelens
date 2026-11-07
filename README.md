@@ -24,7 +24,8 @@ name in `$.state` and in the disable command, the removal of the
 `tengu_jolly_dewdrop` / compliance-taint availability gate, and two requested
 additions: when the official mod is enabled, sidelens soft-suspends for that
 plugin load and lets the official mod draw; and an opt-in `autoSend` setting
-sends the note to the main agent as soon as the explanation appears. See
+sends the note to the main agent and closes the panel as soon as the explanation
+appears. See
 [the analysis](docs/ANALYSIS.md) for the full comparison.
 
 For development rules, the current parity baseline, and a full document index,
@@ -132,7 +133,7 @@ plugin, so no restart is needed.
 
 | Option | Default | Effect |
 | --- | --- | --- |
-| `autoSend` | `false` | As soon as an explanation appears, the note is sent to the main agent as a prompt. The explanation stays on screen; **Chat in main session** is not needed and is not shown. |
+| `autoSend` | `false` | As soon as an explanation appears, the note is sent to the main agent as a prompt and the panel closes, exactly as after choosing **Chat in main session**. No extra action is needed. |
 
 The same value can be set in your user `settings.json` (project settings are
 ignored for plugin options):
@@ -165,8 +166,7 @@ Work normally. After the sixth model step of a turn, the side agent may show:
   one when the observer's reply did not carry an explanation.
 - **Chat in main session** (after an explanation) puts the note in the prompt box
   for you to send. With `sidelens.autoSend` on, that press is not needed: the
-  note is submitted as soon as the explanation appears, and the explanation
-  stays visible.
+  note is submitted as soon as the explanation appears, and the panel closes.
 - **Knew this already** remembers the topic and clears the band.
 - **What is this** opens the mod's own explanation card (hover on desktop).
 - **Disable** arms, then fills `/plugin disable sidelens` in the prompt on the

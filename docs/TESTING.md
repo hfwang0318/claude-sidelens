@@ -165,5 +165,5 @@ The CUA session above ran with `autoSend` at its default (`false`), which is the
 manual path in section 3. The opt-in path is covered deterministically by
 `tests/sidelens.test.ts`: with `{ options: { autoSend: true } }`, pressing
 `Learn more` calls `$.prompt.submit` with the quoted draft and never
-`$.prompt.fill`; the explanation stays on screen without a Chat choice; and a
+`$.prompt.fill`; the panel then closes and records exactly one `respond`; and a
 prompt box that already has text keeps its draft untouched.

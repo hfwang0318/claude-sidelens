@@ -767,8 +767,9 @@ export function register(on, options = {}) {
     }
 
     // With autoSend on, the note goes to the main agent as soon as the first
-    // explanation is on screen.  The explained view stays, so the person can
-    // still read it and answer with Understood or Dismiss.
+    // explanation appears, and the panel then closes exactly as it does after
+    // the person chooses Chat in main session.  One explanation, one answered
+    // event: once the view is cleared there is nothing left to answer again.
     async function autoChat(line, text, shownAt, iteration) {
       if (responding.has(sid)) return
       responding.add(sid)
@@ -781,7 +782,12 @@ export function register(on, options = {}) {
           $.ui.invalidate('ui.render')
           return
         }
+        // If the person answered while the send was in flight, their action
+        // already recorded the answered event; do not record a second one.
+        const shownView = { kind: 'explained', line, text, iteration, shownAt }
+        if (!isSameShowing(rowOf(await $.store.get('sessions'), sid)?.view, shownView)) return
         await answer('respond', { line, shownAt, iteration })
+        await knewThis(line)
       } finally {
         responding.delete(sid)
       }
@@ -958,16 +964,15 @@ export function register(on, options = {}) {
             ? null
             : {
                 gotIt: once('got_it', () => knewThis(line)),
-                // autoSend already handed the note over when the explanation
-                // appeared, so there is no second Chat action to offer.
-                respond: autoSend
-                  ? undefined
-                  : () => {
-                      if (!done) {
-                        done = true
-                        void chat()
-                      }
-                    },
+                // With autoSend the panel normally closes before this can be
+                // pressed; it remains the fallback when the automatic send was
+                // refused, and `responding` blocks a send that is in flight.
+                respond: () => {
+                  if (!done) {
+                    done = true
+                    void chat()
+                  }
+                },
                 dismiss: once('dismiss', () => ask({ line, iteration })),
               },
           tag,

@@ -207,10 +207,12 @@ call，其他新增 call 仍失败。
 - 开启时 `showExplanation()` 在第一次解释（iteration 1）写入 view 后调用 `autoChat()`，
   复用官方已有的 `$.prompt.submit({ text })` 提交 `respondDraft`；
 - 提交的是 prompt，不改写 composer，也不读取/覆盖输入框；用户正在输入的草稿保持原样；
-- 解释面板保留（不 clear、不写 `known`）；`2: Chat in main session` 不再渲染，
-  避免同一建议被发送两次；`1: Understood` / `0: Dismiss` 仍可用；
-- telemetry 记为 `respond`；`prompt.submit` 被 drop 或抛错时 toast `AUTO_SEND_FAILED`，
-  不记 answered；
+- 发送成功后与官方 Chat 路径一致：记 `respond`、写 `known`、清 view，解释面板关闭。
+  因此一条建议只会有 `yes_explain` + `respond` 两条 answered 事件，与官方
+  Learn more + Chat 相同，不会再多出 `got_it` / `dismiss`；
+- 发送在途时 `responding` 阻止 Chat 再次触发；`prompt.submit` 被 drop 或抛错时
+  toast `AUTO_SEND_FAILED`、不记 answered，面板保留，`2: Chat in main session`
+  仍可作为手动回退；
 - 关闭（默认）时解释出现后仍只等待用户选择，`Chat in main session` 的 fill 路径不变。
 
 ## 4. UI 结构
@@ -437,8 +439,9 @@ $ claude plugin validate .
 9. Desktop 去掉 hotkey/星号列，保留原生按钮；
 10. Chat in main session 生成带引用的 draft、填入 prompt、清 band、写入 known
     （autoSend 默认关闭，不提交）；
-11. `autoSend: true` 时解释一出现就提交 draft（不 fill、不按 Chat、解释保留、无 Chat 按钮）；
-12. `autoSend: true` 且输入框已有文本时仍自动提交，且不改写用户草稿；
+11. `autoSend: true` 时解释一出现就提交 draft（不 fill、不按 Chat），随后关闭面板、
+    写 known；answered 事件恰好是 `yes_explain` + `respond`；
+12. `autoSend: true` 且输入框已有文本时仍自动提交、关闭面板，且不改写用户草稿；
 13. 反馈行的 `4: Turn off suggestions` 直接关闭并填入禁用命令（本轮实测发现并修复的回归）；
 14. 官方 `cc-plugin-you-should-know@builtin` 启用时，sidelens 不 fork、不画 band，并清掉旧 view；
 15. 官方旧名（`you-should-know@builtin`）同样触发让位；

@@ -120,11 +120,13 @@ and stays active.
 A second requested addition is also outside the compared data: the manifest
 declares `userConfig.autoSend` (boolean, default `false`). When on, the note is
 submitted through the existing `$.prompt.submit` call as soon as the first
-explanation appears, instead of waiting for **Chat in main session**; the
-explanation stays visible and that choice is omitted. It adds no hook and no `$`
-call, so the scan is unchanged, and with the default off the official explained
-view, including the Chat choice, is unchanged. `tests/sidelens.test.ts` covers
-both settings (default off, explicit on, and a prompt box that already has text).
+explanation appears, instead of waiting for **Chat in main session**; on success
+the view is cleared and the topic marked known exactly as the Chat path does, so
+one explanation produces one `respond` answered event. A refused send keeps the
+panel and leaves the Chat action as the manual fallback. It adds no hook and no
+`$` call, so the scan is unchanged, and with the default off the official
+explained view is unchanged. `tests/sidelens.test.ts` covers both settings
+(default off, explicit on, and a prompt box that already has text).
 
 ## The audit layer
 

@@ -209,23 +209,17 @@ test(
     await ui.press({ key: 'Learn more' })
     await settle(300)
 
-    // The note goes straight to the main agent and the explanation stays on
-    // screen, with no Chat action left to press.
+    // The note goes straight to the main agent and the panel closes, so no
+    // later Understood/Dismiss can record a second answered event for it.
     expect(harness.fills).toHaveLength(0)
     expect(harness.submits).toHaveLength(1)
     expect(harness.submits[0].text).toContain('Here is a note offered by a side agent:')
     expect(harness.submits[0].text).toContain('> Heads up \xB7 The build uses pnpm workspaces.')
-    expect((harness.saved.get('sessions') as any[])[0].view.kind).toBe('explained')
-    expect(harness.saved.get('known')).toBeUndefined()
-    expect(await ui.find({ key: 'Understood' })).toBeDefined()
-    expect(await ui.find({ key: 'Chat in main session' })).toBeUndefined()
-    expect(
-      harness.events.some(
-        (entry) =>
-          entry.event === 'you_should_know_answered' &&
-          entry.props?.answer?.value === 'respond',
-      ),
-    ).toBe(true)
+    expect((harness.saved.get('sessions') as any[])[0].view).toBeUndefined()
+    expect(harness.saved.get('known')).toEqual(['The build uses pnpm workspaces.'])
+    expect(await ui.find({ key: 'Understood' })).toBeUndefined()
+    const answers = harness.events.filter((entry) => entry.event === 'you_should_know_answered')
+    expect(answers.map((entry) => entry.props?.answer?.value)).toEqual(['yes_explain', 'respond'])
   },
 )
 
@@ -241,11 +235,12 @@ test(
     await settle(300)
 
     // Submitting a prompt does not write the composer, so the draft survives
-    // while the note still reaches the main agent.
+    // while the note still reaches the main agent and the panel closes.
     expect(harness.promptText).toBe('I am typing something else')
     expect(harness.fills).toHaveLength(0)
     expect(harness.submits).toHaveLength(1)
-    expect((harness.saved.get('sessions') as any[])[0].view.kind).toBe('explained')
+    expect((harness.saved.get('sessions') as any[])[0].view).toBeUndefined()
+    expect(harness.saved.get('known')).toEqual(['The build uses pnpm workspaces.'])
   },
 )
 
