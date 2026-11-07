@@ -13,6 +13,7 @@
 
 import {
   ASKED_MS,
+  AUTO_SEND_FAILED,
   CHECK_EVERY,
   CLEAR_AFTER_PROMPTS,
   LOOKS_TO_SKIP_MAX,
@@ -330,7 +331,12 @@ async function runAudit($, sid, request, steps) {
   $.ui.invalidate('ui.render')
 }
 
-export function register(on) {
+export function register(on, options = {}) {
+  // `options.autoSend` is the plugin's own opt-in userConfig field (`false` by
+  // default, so the official flow is unchanged).  When on, the note is sent to
+  // the main agent as soon as the first explanation appears, instead of waiting
+  // for the person to choose "Chat in main session".
+  const autoSend = options?.autoSend === true
   const inFlight = new Map()
   const explaining = new Set()
   const askedTimers = new Map()
@@ -760,16 +766,41 @@ export function register(on) {
       }
     }
 
+    // With autoSend on, the note goes to the main agent as soon as the first
+    // explanation is on screen.  The explained view stays, so the person can
+    // still read it and answer with Understood or Dismiss.
+    async function autoChat(line, text, shownAt, iteration) {
+      if (responding.has(sid)) return
+      responding.add(sid)
+      try {
+        const cards = fitCardsToColumns(parseExplanation(text), e.props.bodyColumns)
+        const draft = respondDraft(line, cards, tag)
+        const sent = await $.prompt.submit({ text: draft }).catch(() => undefined)
+        if (sent === undefined || sent?.drop !== undefined) {
+          $.ui.toast(AUTO_SEND_FAILED)
+          $.ui.invalidate('ui.render')
+          return
+        }
+        await answer('respond', { line, shownAt, iteration })
+      } finally {
+        responding.delete(sid)
+      }
+    }
+
     async function showExplanation(line, text, iteration) {
+      const shownAt = Date.now()
       await updateViewForRender({
         kind: 'explained',
         line,
         text,
         iteration,
-        shownAt: Date.now(),
+        shownAt,
       })
       forgetPrompts(promptOrigins, sid)
       $.ui.invalidate('ui.render')
+      if (autoSend && iteration === 1) {
+        void autoChat(line, text, shownAt, iteration).catch(() => undefined)
+      }
     }
 
     async function explain(line, direction, iteration) {
@@ -927,12 +958,16 @@ export function register(on) {
             ? null
             : {
                 gotIt: once('got_it', () => knewThis(line)),
-                respond: () => {
-                  if (!done) {
-                    done = true
-                    void chat()
-                  }
-                },
+                // autoSend already handed the note over when the explanation
+                // appeared, so there is no second Chat action to offer.
+                respond: autoSend
+                  ? undefined
+                  : () => {
+                      if (!done) {
+                        done = true
+                        void chat()
+                      }
+                    },
                 dismiss: once('dismiss', () => ask({ line, iteration })),
               },
           tag,

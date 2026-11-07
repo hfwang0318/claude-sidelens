@@ -8,6 +8,14 @@
   },
   "license": "MIT",
   "types": "./types/index.d.ts",
+  "userConfig": {
+    "autoSend": {
+      "type": "boolean",
+      "title": "Auto-send to main agent",
+      "description": "When an explanation appears, send the note to the main agent automatically instead of waiting for Chat in main session.",
+      "default": false
+    }
+  },
   "keywords": [
     "claude-code",
     "mod",

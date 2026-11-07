@@ -46,12 +46,13 @@ isAvailable = complianceTaintsSettled()
 - 插件状态 key：`sidelens.aboutOpen`
 - 禁用命令：`/plugin disable sidelens`
 - `defaultEnabled: false`（与官方一致，需要显式启用）
-- 测试：**43 pass, 0 fail**
-  - 13 个 sidelens 行为测试
+- 测试：**51 pass, 0 fail**
+  - 15 个 sidelens 行为测试（含 2 个 autoSend 测试）
   - 4 个 parser 单元测试
   - 13 个官方差分测试
-  - 10 个审查层纯函数测试（条款切分、证据包、协议、开关）
+  - 11 个审查层纯函数测试（条款切分、证据包、协议、开关）
   - 3 个审查层接线测试（默认关闭、空 turn 不审）
+  - 5 个 verdict 测试
 - `claude plugin validate .`：通过
 - `npm run parity:check`：fixture 与已安装 2.1.308 一致，6 hooks / 19 calls 一致
   （官方 18 + 本项目 intentional extra `settings.read`）
@@ -131,12 +132,34 @@ parity 测试只 normalization 禁用命令：
 这是新增能力，扫描会多一个 `settings.read`（19 calls）；`parity:scan` 允许这一个
 intentional extra，其他新增 call 仍然失败。
 
+### 3.5 用户要求的 intentional extra：autoSend
+
+用户要求：解释一出现就自动把建议发送给主 agent，不需要用户再按
+`2: Chat in main session`。实现是：
+
+- manifest 的 `userConfig.autoSend`（boolean，`default: false`）是唯一开关；
+  它出现在 `/config`，也可通过 user settings 的
+  `pluginConfigs["sidelens@<marketplace>"].options.autoSend` 设置；
+- `register(on, options)` 读取 `options.autoSend === true`；不新增 hook、不新增
+  `$` 调用，也不写 env/state；
+- 开启时 `showExplanation()` 在第一次解释（iteration 1）写入 view 后调用
+  `autoChat()`：复用官方已有的 `$.prompt.submit` 提交 `respondDraft`，不改写输入框，
+  因此用户正在输入的草稿不受影响；
+- 解释面板保留在屏幕上（不 clear、不写 `known`），用户仍可用 `1: Understood` /
+  `0: Dismiss`；此时不再渲染 `2: Chat in main session`，避免重复发送；
+- telemetry 记为 `respond`；提交被 drop 或抛出时 toast `AUTO_SEND_FAILED`，
+  不记 answered；
+- 关闭（默认）时行为与官方逐字节一致：解释出现后只等用户选择，
+  fill/提交语义不变。
+
+这是新增能力，但没有新增扫描项；`parity:scan` 仍是 6 hooks / 19 calls。
+
 ---
 
 ## 4. 代码结构
 
 ```text
-.claude-plugin/plugin.json   manifest；name、defaultEnabled:false、types
+.claude-plugin/plugin.json   manifest；name、defaultEnabled:false、types、userConfig.autoSend
 .claude-plugin/icon.png      插件图标
 hooks/hooks.json             指向 hooks/register.js
 hooks/register.js            6 个 hooks + 所有 $. 调用 + 业务编排
@@ -279,8 +302,10 @@ npm run test              # 观察哪些 case/path 变化
 - [ ] 没有新增 hooks / `$` 调用 / env / state / file 权限；`npm run parity:scan` 6/19 通过
       （官方 18 + 唯一 intentional `settings.read`）。
 - [ ] 没有添加 `isAvailable` 或把 `defaultEnabled` 改为 true。
+- [ ] `userConfig.autoSend` 保持 `default: false`；关闭时解释出现后仍等待用户
+      选择，`Chat in main session` 只 fill、不 submit。
 - [ ] 所有 `$` 调用仍在 `hooks/register.js`；`lib/` 保持纯函数。
-- [ ] `npm run validate` 通过；`npm run test` 30+ pass。
+- [ ] `npm run validate` 通过；`npm run test` 50+ pass。
 - [ ] 如果官方版本变了：fixture 已更新、版本号/文档已更新、`parity:check` 通过。
 - [ ] 如果改了可观察行为：ANALYSIS/PARITY/README 已同步。
 - [ ] 没有手改 `tests/parity/fixtures/official.mjs`。

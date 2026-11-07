@@ -180,7 +180,7 @@ offer ──Learn more──> explaining ──> explained ──Chat──> (dr
 
 ### 3.5 官方插件生效时自动让位（用户要求的额外能力）
 
-这是本项目唯一超出官方行为的用户请求能力：
+这是本项目超出官方行为的用户请求能力之一：
 
 - 每次 plugin load 内第一次 `prompt.submit` / `turn.step` / `ui.render` 时，
   调用 `$.settings.read()` 读取 merged settings；
@@ -196,6 +196,22 @@ offer ──Learn more──> explaining ──> explained ──Chat──> (dr
 
 代价：scan 多一个 `settings.read`（官方 18 + 1 intentional）；parity scan 允许这一个额外
 call，其他新增 call 仍失败。
+
+### 3.6 自动发送给主 agent（用户要求的额外能力）
+
+- manifest 声明 `userConfig.autoSend`（boolean，默认 `false`）。它出现在 `/config`，
+  也可以写在 user settings 的 `pluginConfigs["sidelens@<marketplace>"].options.autoSend`；
+- `register(on, options)` 读取 `options.autoSend === true`；不新增 hook、`$` 调用、
+  env 读取或 state 键；
+- 关闭（默认）时 `chat()` 完全走官方路径：`$.prompt.fill` 把草稿放进输入框，由用户按 Enter；
+- 开启时 `showExplanation()` 在第一次解释（iteration 1）写入 view 后调用 `autoChat()`，
+  复用官方已有的 `$.prompt.submit({ text })` 提交 `respondDraft`；
+- 提交的是 prompt，不改写 composer，也不读取/覆盖输入框；用户正在输入的草稿保持原样；
+- 解释面板保留（不 clear、不写 `known`）；`2: Chat in main session` 不再渲染，
+  避免同一建议被发送两次；`1: Understood` / `0: Dismiss` 仍可用；
+- telemetry 记为 `respond`；`prompt.submit` 被 drop 或抛错时 toast `AUTO_SEND_FAILED`，
+  不记 answered；
+- 关闭（默认）时解释出现后仍只等待用户选择，`Chat in main session` 的 fill 路径不变。
 
 ## 4. UI 结构
 
@@ -408,7 +424,7 @@ $ claude plugin validate .
 
 ### 9.2 行为测试（`claude plugin test`）
 
-17 个行为/纯函数测试覆盖（另有 §9.5 的 13 个官方差分测试）：
+19 个行为/纯函数测试覆盖（另有 §9.5 的 13 个官方差分测试）：
 
 1. 三方 model 的 fork 产生 offer，band 文本/按钮正确，Learn more 进入解释；
 2. 第 6 步才检查，重复建议 dedupe；
@@ -419,13 +435,16 @@ $ claude plugin validate .
 7. 连续 2 个 prompt → clear + ignored_submit + typedPastInARow；
 8. 观察结果没有 explanation 时，Learn more 再发一次 explain fork；
 9. Desktop 去掉 hotkey/星号列，保留原生按钮；
-10. Chat in main session 生成带引用的 draft、填入 prompt、清 band、写入 known；
-11. 反馈行的 `4: Turn off suggestions` 直接关闭并填入禁用命令（本轮实测发现并修复的回归）；
-12. 官方 `cc-plugin-you-should-know@builtin` 启用时，sidelens 不 fork、不画 band，并清掉旧 view；
-13. 官方旧名（`you-should-know@builtin`）同样触发让位；
-14–17. 纯函数测试：`learn: none`、完整 proposal、解释卡片/sketch、off 命令识别。
+10. Chat in main session 生成带引用的 draft、填入 prompt、清 band、写入 known
+    （autoSend 默认关闭，不提交）；
+11. `autoSend: true` 时解释一出现就提交 draft（不 fill、不按 Chat、解释保留、无 Chat 按钮）；
+12. `autoSend: true` 且输入框已有文本时仍自动提交，且不改写用户草稿；
+13. 反馈行的 `4: Turn off suggestions` 直接关闭并填入禁用命令（本轮实测发现并修复的回归）；
+14. 官方 `cc-plugin-you-should-know@builtin` 启用时，sidelens 不 fork、不画 band，并清掉旧 view；
+15. 官方旧名（`you-should-know@builtin`）同样触发让位；
+16–19. 纯函数测试：`learn: none`、完整 proposal、解释卡片/sketch、off 命令识别。
 
-结果：与 §9.5 合计 `30 pass, 0 fail`。
+结果：全部测试文件合计 `51 pass, 0 fail`。
 
 ### 9.3 真实 provider 验证
 

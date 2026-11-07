@@ -16,6 +16,7 @@ export function install(
   const saved = new Map<string, unknown>()
   const forks: { prompt: string }[] = []
   const fills: string[] = []
+  const submits: { text: string; origin?: unknown }[] = []
   const toasts: string[] = []
   const events: any[] = []
   const marks: any[] = []
@@ -51,7 +52,10 @@ export function install(
     promptText = e.text
     return { isFilled: true }
   })
-  on('prompt.submit', (_$: unknown, e: { text: string }) => ({ text: e.text }))
+  on('prompt.submit', (_$: unknown, e: { text: string; origin?: unknown }) => {
+    submits.push(e)
+    return { text: e.text }
+  })
   on('ui.toast', (_$: unknown, e: { text?: string }) => {
     toasts.push(e.text ?? '')
     return { value: undefined }
@@ -89,6 +93,7 @@ export function install(
     saved,
     forks,
     fills,
+    submits,
     toasts,
     events,
     marks,

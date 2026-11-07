@@ -117,6 +117,15 @@ allows that one extra and fails on any other extra or missing call. If the
 settings read fails or is denied, sidelens treats the official mod as disabled
 and stays active.
 
+A second requested addition is also outside the compared data: the manifest
+declares `userConfig.autoSend` (boolean, default `false`). When on, the note is
+submitted through the existing `$.prompt.submit` call as soon as the first
+explanation appears, instead of waiting for **Chat in main session**; the
+explanation stays visible and that choice is omitted. It adds no hook and no `$`
+call, so the scan is unchanged, and with the default off the official explained
+view, including the Chat choice, is unchanged. `tests/sidelens.test.ts` covers
+both settings (default off, explicit on, and a prompt box that already has text).
+
 ## The audit layer
 
 The audit extension adds no hook and no `$` call of its own, so the scan above is

@@ -185,6 +185,8 @@ test('Chat in main session fills a quoted draft and clears the offer', async ($,
   expect(harness.fills).toHaveLength(1)
   expect(harness.fills[0]).toContain('Here is a note offered by a side agent:')
   expect(harness.fills[0]).toContain('> Heads up \xB7 The build uses pnpm workspaces.')
+  // autoSend defaults to false, so the draft waits for the person to send it.
+  expect(harness.submits).toHaveLength(0)
   expect((harness.saved.get('sessions') as any[])[0].view).toBeUndefined()
   expect(harness.saved.get('known')).toEqual(['The build uses pnpm workspaces.'])
   expect(
@@ -196,6 +198,56 @@ test('Chat in main session fills a quoted draft and clears the offer', async ($,
   ).toBe(true)
 })
 
+
+test(
+  'autoSend sends the note when the explanation appears',
+  { options: { autoSend: true } },
+  async ($, on) => {
+    const harness = install(on, { fork: () => OFFER })
+    await trigger($, harness)
+    const ui = await mountBand($)
+    await ui.press({ key: 'Learn more' })
+    await settle(300)
+
+    // The note goes straight to the main agent and the explanation stays on
+    // screen, with no Chat action left to press.
+    expect(harness.fills).toHaveLength(0)
+    expect(harness.submits).toHaveLength(1)
+    expect(harness.submits[0].text).toContain('Here is a note offered by a side agent:')
+    expect(harness.submits[0].text).toContain('> Heads up \xB7 The build uses pnpm workspaces.')
+    expect((harness.saved.get('sessions') as any[])[0].view.kind).toBe('explained')
+    expect(harness.saved.get('known')).toBeUndefined()
+    expect(await ui.find({ key: 'Understood' })).toBeDefined()
+    expect(await ui.find({ key: 'Chat in main session' })).toBeUndefined()
+    expect(
+      harness.events.some(
+        (entry) =>
+          entry.event === 'you_should_know_answered' &&
+          entry.props?.answer?.value === 'respond',
+      ),
+    ).toBe(true)
+  },
+)
+
+test(
+  'autoSend does not touch a prompt box that already has text',
+  { options: { autoSend: true } },
+  async ($, on) => {
+    const harness = install(on, { fork: () => OFFER })
+    await trigger($, harness)
+    harness.promptText = 'I am typing something else'
+    const ui = await mountBand($)
+    await ui.press({ key: 'Learn more' })
+    await settle(300)
+
+    // Submitting a prompt does not write the composer, so the draft survives
+    // while the note still reaches the main agent.
+    expect(harness.promptText).toBe('I am typing something else')
+    expect(harness.fills).toHaveLength(0)
+    expect(harness.submits).toHaveLength(1)
+    expect((harness.saved.get('sessions') as any[])[0].view.kind).toBe('explained')
+  },
+)
 
 test('Turn off suggestions on the feedback row turns suggestions off at once', async ($, on) => {
   const harness = install(on, { fork: () => OFFER })
