@@ -23,9 +23,10 @@ colours, and terminal/desktop layouts are ported from Claude Code 2.1.308's
 name in `$.state` and in the disable command, the removal of the
 `tengu_jolly_dewdrop` / compliance-taint availability gate, and two requested
 additions: when the official mod is enabled, sidelens soft-suspends for that
-plugin load and lets the official mod draw; and an opt-in `autoSend` setting
-sends the note to the main agent and closes the panel as soon as the explanation
-appears. See
+plugin load and lets the official mod draw; an opt-in `autoSend` setting sends
+the note to the main agent and closes the panel as soon as the explanation
+appears; and an opt-in `backlog` setting keeps checking while an explanation
+waits, then shows earlier notes one at a time, explicitly labeled. See
 [the analysis](docs/ANALYSIS.md) for the full comparison.
 
 For development rules, the current parity baseline, and a full document index,
@@ -127,22 +128,23 @@ with screenshots and findings in [docs/TESTING.md](docs/TESTING.md).
 
 ## Settings
 
-The plugin declares one option, `autoSend`, and it is **off by default**. It
-appears in `/config` as **Auto-send to main agent**; changing it reloads the
-plugin, so no restart is needed.
+The plugin declares two options, both **off by default**. They appear in
+`/config` as **Auto-send to main agent** and **Keep earlier notes in a
+backlog**; changing either reloads the plugin, so no restart is needed.
 
 | Option | Default | Effect |
 | --- | --- | --- |
 | `autoSend` | `false` | As soon as an explanation appears, the note is sent to the main agent as a prompt and the panel closes, exactly as after choosing **Chat in main session**. No extra action is needed. |
+| `backlog` | `false` | While an explanation is waiting, checks keep running and hold up to three new notes. When you handle the open note, the next one appears as an **Earlier note · found Nm ago** offer. Notes expire after 30 minutes or three of your prompts, whichever comes first. Ignored while `autoSend` is on. |
 
-The same value can be set in your user `settings.json` (project settings are
+The settings can also be set in your user `settings.json` (project settings are
 ignored for plugin options):
 
 ```json
 {
   "pluginConfigs": {
     "sidelens@claude-sidelens": {
-      "options": { "autoSend": true }
+      "options": { "autoSend": false, "backlog": true }
     }
   }
 }
@@ -150,7 +152,11 @@ ignored for plugin options):
 
 Use `sidelens@inline` instead of `sidelens@claude-sidelens` when the plugin is
 loaded with `--plugin-dir`. Auto-send submits a prompt; it never writes the
-composer, so a draft you are already typing stays exactly as it is.
+composer, so a draft you are already typing stays exactly as it is. Backlog
+notes are only headlines: pressing **Learn more** on one forks a fresh
+explanation against the conversation as it stands now, not the one captured
+when the note was queued. Typing past an offer drops the rest of the backlog,
+and turning suggestions off clears it.
 
 ## Use
 
@@ -199,6 +205,7 @@ The plugin stores only plain JSON under its own `$.store` keys (`sessions`,
 | Official mod enabled | — | sidelens soft-suspends and yields the band |
 | Extra API | — | `settings.read`, only for that detection |
 | Auto-send option | — | `userConfig.autoSend`, off by default; sends the note when the explanation appears, without the Chat press |
+| Backlog option | — | `userConfig.backlog`, off by default; queues up to 3 earlier notes while an explanation waits, labeled with their age |
 | Everything else | — | Ported unchanged |
 
 The compliance exclusions cannot be read through the public mods API. If your

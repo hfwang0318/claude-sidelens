@@ -14,6 +14,12 @@
       "title": "Auto-send to main agent",
       "description": "When an explanation appears, send the note to the main agent automatically and close the panel, instead of waiting for Chat in main session.",
       "default": false
+    },
+    "backlog": {
+      "type": "boolean",
+      "title": "Keep earlier notes in a backlog",
+      "description": "While an explanation is waiting, keep checking and hold up to three new notes. When you handle the open note, the next earlier note appears, labeled with when it was found. Off while autoSend is on.",
+      "default": false
     }
   },
   "keywords": [

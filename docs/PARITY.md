@@ -128,6 +128,33 @@ panel and leaves the Chat action as the manual fallback. It adds no hook and no
 explained view is unchanged. `tests/sidelens.test.ts` covers both settings
 (default off, explicit on, and a prompt box that already has text).
 
+A third requested addition is the opt-in `userConfig.backlog` (boolean, default
+`false`). While an explained view waits, checks keep running and queue up to
+three proposals in the session row instead of replacing the open panel; when the
+person handles the panel, the first surviving note becomes an offer labeled
+`Earlier note · found Nm ago`. Queued notes expire after 30 minutes or three of
+the person's prompts, whichever comes first, and the backlog is disabled while
+`autoSend` is on.
+
+This deliberately relaxes two official rules, and only while the option is on:
+
+- the check gate no longer treats an open `explained` view as a reason to stop;
+- dequeueing bypasses `isOfferDue`'s same-turn rule, because the note is shown
+  later by design. Freshness is bounded by the TTL instead, and the panel is
+  labeled as earlier so it is not mistaken for the current turn.
+
+Queued proposals are **not** recorded as shown. Enqueueing emits only the
+project-only `you_should_know_backlog` event with `outcome: 'queued'`; the
+official `you_should_know_proposed` event is deferred until the note actually
+reaches the screen, and then carries the original check's `step`, `latency_ms`,
+`usage` and `offers_shown` plus `queued: true` (the `proposed()` builder adds
+that property only when set, so official fixture records are unchanged). A note
+that expires or is dropped never emits the official proposed event, so a
+dashboard counting `outcome = shown` stays accurate. Showing, expiry and drops
+also emit `you_should_know_backlog` with `outcome`, `wait_ms`, `age_ms` and
+`depth`. No hook and no `$` call is added: the scan stays 6 hooks / 19 calls.
+The behavior is covered by `tests/backlog.test.ts`.
+
 ## The audit layer
 
 The audit extension adds no hook and no `$` call of its own, so the scan above is

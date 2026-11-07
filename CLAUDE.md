@@ -46,8 +46,9 @@ isAvailable = complianceTaintsSettled()
 - 插件状态 key：`sidelens.aboutOpen`
 - 禁用命令：`/plugin disable sidelens`
 - `defaultEnabled: false`（与官方一致，需要显式启用）
-- 测试：**51 pass, 0 fail**
+- 测试：**60 pass, 0 fail**
   - 15 个 sidelens 行为测试（含 2 个 autoSend 测试）
+  - 9 个 backlog 测试（入队/出队/上限/TTL/退避/互斥/纯函数）
   - 4 个 parser 单元测试
   - 13 个官方差分测试
   - 11 个审查层纯函数测试（条款切分、证据包、协议、开关）
@@ -155,26 +156,57 @@ intentional extra，其他新增 call 仍然失败。
 
 这是新增能力，但没有新增扫描项；`parity:scan` 仍是 6 hooks / 19 calls。
 
+### 3.6 用户要求的 intentional extra：backlog
+
+用于多会话并行、用户暂时顾不上某个会话的场景。默认关闭，且与 `autoSend` 互斥
+（同时开启时 `autoSend` 优先，backlog 不生效）。
+
+- manifest 的 `userConfig.backlog`（boolean，`default: false`）是唯一开关，
+  同样出现在 `/config` 与 `pluginConfigs["sidelens@<marketplace>"].options.backlog`；
+- `explained` 面板挂着时，`turn.step` 的 skip 不再因 `view !== null` 直接返回；
+  检查结果写入 session row 的 `backlog`（只存标题、`tag`、`proposedAt`、`turnId`、
+  `step`、`promptSeq`），不替换当前面板；
+- 上限 `BACKLOG_MAX = 3`；TTL 取 `BACKLOG_TTL_MS = 30 分钟` 与
+  `BACKLOG_TTL_PROMPTS = 3 个用户 prompt` 的较小者，惰性清理；
+- 用户处理当前面板后，队首以 `offer` 出队，view 带 `fromBacklog: true` 与
+  `proposedAt`；offer 与展开后的解释上方都画 `Earlier note · found Nm ago`
+  （`backlogFrame`），明确标注不是当前轮内容；
+- backlog offer 的 `Learn more` 重新 `explain()`，解释基于当前 transcript，不复用
+  入队时的文本；
+- type-past offer（`ignored_submit`）、`turn_off`、`session.end` 清空 backlog；
+  队列 line 会合并进 `proposePrompt` 的 `seen` 做去重，但展示前不写入官方 `seen`；
+- 出队刻意绕过 `isOfferDue` 的同 turn 规则，由 TTL 控制新鲜度；这是本能力唯一的
+  intentional difference，必须写进 PARITY；
+- 遥测：入队只发项目专属 `you_should_know_backlog` 的 `queued`；官方 `proposed`
+  延后到真正展示时发出（带 `queued: true` 和入队时的 step/latency/usage），
+  被丢弃的笔记不会计入 `outcome = shown`；评估 backlog 用
+  `you_should_know_backlog` 的 `shown`；
+- 接收 `$` 的 backlog helper 必须是 `hooks/register.js` 的**文件顶层函数**，
+  不能定义在 `register()` 内，否则 mods 静态扫描会拒绝加载；
+- 不新增 hook、`$` 调用、env 或 state 键，scan 仍是 6 hooks / 19 calls；
+- 关闭（默认）时所有官方路径、UI 树和 fixture 完全不变。
+
 ---
 
 ## 4. 代码结构
 
 ```text
-.claude-plugin/plugin.json   manifest；name、defaultEnabled:false、types、userConfig.autoSend
+.claude-plugin/plugin.json   manifest；name、defaultEnabled:false、types、userConfig.autoSend/backlog
 .claude-plugin/icon.png      插件图标
 hooks/hooks.json             指向 hooks/register.js
-hooks/register.js            6 个 hooks + 所有 $. 调用 + 业务编排
+hooks/register.js            6 个 hooks + 所有 $. 调用 + 业务编排 + backlog 顶层 helper
 lib/prompts.js              官方 observer / explain prompt（字节级一致）
-lib/constants.js            阈值、标签、outcome、copy、颜色
+lib/constants.js            阈值、标签、outcome、copy、颜色、backlog 常量
 lib/parse.js                proposal / explanation 解析、tag、off 命令
 lib/text.js                 宽度、截断、换行、控制序列清理
-lib/data.js                 session row、view 状态、band 可见性
-lib/telemetry.js            answered / explained / proposed / page 记录
-lib/ui.js                   AbovePrompt 树、about、fit、Markdown/Code、audit 行
+lib/data.js                 session row、view 状态、band 可见性、backlog 过期纯函数
+lib/telemetry.js            answered / explained / proposed / page / backlog 记录
+lib/ui.js                   AbovePrompt 树、about、fit、Markdown/Code、audit 行、Earlier note 标签
 lib/audit.js                审查层：条款切分、维度开关、prompt 组装、三态解析
 lib/ledger.js               审查层：从 step 结果提取文件/命令/读取摘要
 types/index.d.ts            sidelens.aboutOpen 状态声明
 tests/sidelens.test.ts      行为测试（fork/UI/状态/禁用）
+tests/backlog.test.ts       backlog 纯函数与行为测试
 tests/parse.test.ts         parser 单元测试
 tests/audit.test.ts         审查层纯函数测试
 tests/audit-layer.test.ts   审查层接线测试
@@ -189,6 +221,7 @@ docs/                       分析、测试、parity 文档
 1. `turn.step` 每 6 步触发一次后台 `$.model.fork`；
 2. 解析结果写入 `sessions` / `seen` / `known`；
 3. `ui.render{AbovePrompt}` 读取 store 和 `aboutOpen` state，画 offer/explained/asked；
+   `backlog` 模式会在 `explained` 挂着时继续检查，并在处理后弹出带 `Earlier note` 标签的 offer；
 4. 按键或 prompt 事件更新状态；`off` 只填命令，用户按 Enter 才真正执行；
 5. `session.end` 清 row 并记录 `left_open` / `off_abandoned`。
 
@@ -279,7 +312,8 @@ npm run test              # 观察哪些 case/path 变化
 
 - 纯函数/边界：加到 `tests/parity/corpus.mjs`，`parity:update` 自动扩展 fixture；
   同时在 `tests/parity/official.test.ts` 加对应断言。
-- 行为/事件链：加到 `tests/sidelens.test.ts`，用 `tests/harness.ts` 的 stub。
+- 行为/事件链：加到 `tests/sidelens.test.ts`，用 `tests/harness.ts` 的 stub；
+  backlog 的纯函数与行为加到 `tests/backlog.test.ts`。
 - 真实交互：按 `docs/TESTING.md` 用 CUA 操作 iTerm2 + Claude Code；不要用 `claude -p`
   测 band（没有 surface，不会画）。
 - 测试失败信息应包含 case 名/路径；不要只断言 `toBeTruthy`。
@@ -303,10 +337,12 @@ npm run test              # 观察哪些 case/path 变化
 - [ ] 没有新增 hooks / `$` 调用 / env / state / file 权限；`npm run parity:scan` 6/19 通过
       （官方 18 + 唯一 intentional `settings.read`）。
 - [ ] 没有添加 `isAvailable` 或把 `defaultEnabled` 改为 true。
-- [ ] `userConfig.autoSend` 保持 `default: false`；关闭时解释出现后仍等待用户
-      选择，`Chat in main session` 只 fill、不 submit。
+- [ ] `userConfig.autoSend` 与 `userConfig.backlog` 都保持 `default: false`；
+      关闭时解释出现后仍等待用户选择，`Chat in main session` 只 fill、不 submit。
+- [ ] `autoSend` 与 `backlog` 同时开启时 `autoSend` 优先，backlog 不生效。
+- [ ] 接收 `$` 的 backlog helper 是 `hooks/register.js` 顶层函数，不在 `register()` 内定义。
 - [ ] 所有 `$` 调用仍在 `hooks/register.js`；`lib/` 保持纯函数。
-- [ ] `npm run validate` 通过；`npm run test` 50+ pass。
+- [ ] `npm run validate` 通过；`npm run test` 60+ pass。
 - [ ] 如果官方版本变了：fixture 已更新、版本号/文档已更新、`parity:check` 通过。
 - [ ] 如果改了可观察行为：ANALYSIS/PARITY/README 已同步。
 - [ ] 没有手改 `tests/parity/fixtures/official.mjs`。

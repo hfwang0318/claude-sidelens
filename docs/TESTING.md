@@ -167,3 +167,14 @@ manual path in section 3. The opt-in path is covered deterministically by
 `Learn more` calls `$.prompt.submit` with the quoted draft and never
 `$.prompt.fill`; the panel then closes and records exactly one `respond`; and a
 prompt box that already has text keeps its draft untouched.
+
+## Backlog option
+
+The CUA session above ran with `backlog` at its default (`false`). The opt-in
+path is covered deterministically by `tests/backlog.test.ts`: while an
+explanation waits, the plugin keeps checking and queues up to three notes
+without replacing the panel; handling the explanation shows the first note as an
+`Earlier note · found …` offer and re-forks its explanation; the queue stops at
+three, expires after the configured time or three prompts, and is cleared when
+the person types past an offer. `autoSend` and `backlog` together leave the
+backlog off.

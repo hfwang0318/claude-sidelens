@@ -14,6 +14,7 @@
 import {
   ASKED_MS,
   AUTO_SEND_FAILED,
+  BACKLOG_MAX,
   CHECK_EVERY,
   CLEAR_AFTER_PROMPTS,
   LOOKS_TO_SKIP_MAX,
@@ -48,10 +49,12 @@ import {
   revive,
   rowOf,
   droppedOf,
+  liveBacklog,
   storedCount,
   stringLines,
   withRow,
   withViewCleared,
+  withoutBacklogLine,
 } from '../lib/data.js'
 import {
   isComposer,
@@ -73,6 +76,7 @@ import { extractLedger, finalTextOf, requestOf } from '../lib/ledger.js'
 import { explainPrompt, proposePrompt } from '../lib/prompts.js'
 import {
   answered as answeredRecord,
+  backlog as backlogRecord,
   checksOf,
   checksWith,
   explained as explainedRecord,
@@ -85,6 +89,7 @@ import {
   aboutFrame,
   askedRow,
   auditRow,
+  backlogFrame,
   debugRows,
   explainedAskedRow,
   explainedRow,
@@ -102,6 +107,156 @@ async function deliver($, record) {
   try {
     await $.telemetry.log(record.entry)
     if (record.mark) await $.telemetry.mark(record.mark)
+  } catch {
+    return
+  }
+}
+
+// ---- opt-in backlog -------------------------------------------------------
+//
+// While an explained view waits for the person, checks keep running and queue
+// at most BACKLOG_MAX notes.  Queue entries hold only the headline; opening one
+// re-forks the explanation against the transcript as it stands then, and the
+// panel is labeled as coming from earlier.
+
+async function expireBacklog($, sid, enabled) {
+  if (!enabled) return []
+  try {
+    const now = Date.now()
+    const sessions = await $.store.get('sessions')
+    const row = rowOf(sessions, sid)
+    const items = Array.isArray(row?.backlog) ? row.backlog : []
+    const live = liveBacklog(row, now)
+    const expired = items.filter((item) => !live.includes(item))
+    if (expired.length === 0) return live
+    await $.store.set('sessions', withRow(sessions, { ...(row ?? { id: sid }), backlog: live }))
+    for (const item of expired) {
+      await deliver(
+        $,
+        backlogRecord({
+          outcome: 'dropped_ttl',
+          ageMs: now - item.proposedAt,
+          depth: live.length,
+          tag: item.tag,
+        }),
+      )
+    }
+    return live
+  } catch {
+    return []
+  }
+}
+
+async function clearBacklog($, sid, cause, enabled) {
+  if (!enabled) return
+  try {
+    const now = Date.now()
+    const sessions = await $.store.get('sessions')
+    const row = rowOf(sessions, sid)
+    const items = Array.isArray(row?.backlog) ? row.backlog : []
+    if (items.length === 0) return
+    const live = liveBacklog(row, now)
+    await $.store.set('sessions', withRow(sessions, { ...(row ?? { id: sid }), backlog: [] }))
+    for (const item of items) {
+      const expired = !live.includes(item)
+      await deliver(
+        $,
+        backlogRecord({
+          outcome: expired ? 'dropped_ttl' : cause,
+          ageMs: now - (item.proposedAt ?? now),
+          depth: 0,
+          tag: item.tag,
+        }),
+      )
+    }
+  } catch {
+    return
+  }
+}
+
+// Called after the person handles the open panel: the first surviving note
+// becomes the next offer, labeled as an earlier note.
+async function advanceBacklog($, sid, enabled) {
+  if (!enabled) return
+  try {
+    const now = Date.now()
+    const sessions = await $.store.get('sessions')
+    const row = rowOf(sessions, sid)
+    const items = Array.isArray(row?.backlog) ? row.backlog : []
+    const live = liveBacklog(row, now)
+    const expired = items.filter((entry) => !live.includes(entry))
+    if (live.length === 0) {
+      if (items.length > 0) {
+        await $.store.set('sessions', withRow(sessions, { ...row, backlog: [] }))
+      }
+      for (const entry of expired) {
+        await deliver(
+          $,
+          backlogRecord({
+            outcome: 'dropped_ttl',
+            ageMs: now - entry.proposedAt,
+            depth: 0,
+            tag: entry.tag,
+          }),
+        )
+      }
+      return
+    }
+    const [item, ...rest] = live
+    await $.store.set(
+      'sessions',
+      withRow(sessions, {
+        ...(row ?? { id: sid }),
+        tag: item.tag,
+        backlog: rest,
+        view: {
+          kind: 'offer',
+          line: item.line,
+          tag: item.tag,
+          fromBacklog: true,
+          proposedAt: item.proposedAt,
+          shownAt: now,
+        },
+      }),
+    )
+    const seen = stringLines(await $.store.get('seen'))
+    await $.store.set('seen', [...seen, item.line].slice(-SEEN_MAX))
+    $.ui.invalidate('ui.render')
+    // Only now did the note reach the screen, so this is when the official
+    // proposed record is emitted.
+    const deferred = item.telemetry ?? {}
+    await deliver(
+      $,
+      proposedRecord({
+        outcome: 'shown',
+        queued: true,
+        step: Number.isFinite(item.step) ? item.step : 0,
+        latencyMs: Number.isFinite(deferred.latencyMs) ? deferred.latencyMs : 0,
+        usage: deferred.usage ?? null,
+        offersShown: Number.isFinite(deferred.offersShown) ? deferred.offersShown : 0,
+        tag: item.tag,
+      }),
+    )
+    for (const entry of expired) {
+      await deliver(
+        $,
+        backlogRecord({
+          outcome: 'dropped_ttl',
+          ageMs: now - entry.proposedAt,
+          depth: rest.length,
+          tag: entry.tag,
+        }),
+      )
+    }
+    await deliver(
+      $,
+      backlogRecord({
+        outcome: 'shown',
+        waitMs: now - item.proposedAt,
+        depth: rest.length,
+        tag: item.tag,
+      }),
+    )
   } catch {
     return
   }
@@ -337,6 +492,9 @@ export function register(on, options = {}) {
   // the main agent as soon as the first explanation appears, instead of waiting
   // for the person to choose "Chat in main session".
   const autoSend = options?.autoSend === true
+  // The backlog only makes sense when the panel waits for the person; with
+  // autoSend the panel closes at once, so autoSend wins.
+  const backlogOn = options?.backlog === true && !autoSend
   const inFlight = new Map()
   const explaining = new Set()
   const askedTimers = new Map()
@@ -422,7 +580,15 @@ export function register(on, options = {}) {
       revive(ended, sid)
       const origin = promptedAtTurnStart(promptOrigins, sid, e.index)
       if (e.index === 0) promptOrigins.delete(sid)
-      const row = rowOf(await $.store.get('sessions'), sid)
+      let row = rowOf(await $.store.get('sessions'), sid)
+      // The backlog expires after the person has moved on by their own
+      // prompts, so count them at each attended turn start.
+      if (backlogOn && e.index === 0 && origin !== undefined && isComposer(origin.origin)) {
+        await updateRow(sid, {
+          promptSeq: storedCount(row?.promptSeq) + origin.count,
+        })
+        row = rowOf(await $.store.get('sessions'), sid)
+      }
       let view = row?.view ?? null
 
       if (isUnattendedInFlight(view, sid, explaining)) {
@@ -440,10 +606,16 @@ export function register(on, options = {}) {
         }
       }
 
+      const backlogItems = await expireBacklog($, sid, backlogOn)
+      const backlogRoom = backlogItems.length < BACKLOG_MAX
+      // With the backlog on, a waiting explanation no longer stops the
+      // checks: new notes queue instead of replacing the open panel.
+      const blockedByView =
+        view !== null && !(backlogOn && view.kind === 'explained' && backlogRoom)
       const skip =
         !(e.index > 0 && e.index % CHECK_EVERY === 0) ||
         row?.offeredTurn === e.turnId ||
-        view !== null ||
+        blockedByView ||
         !isBandWatched(surfaces, watched, bridged.has(sid))
 
       if (e.index === 0) {
@@ -474,6 +646,9 @@ export function register(on, options = {}) {
             return
           }
           $.ui.invalidate('ui.render')
+          // Typing past an offer is a disengagement signal: drop the backlog
+          // instead of surfacing notes the person is not reading.
+          await clearBacklog($, sid, 'dropped_ignored', backlogOn)
           const typed = storedCount(await $.store.get('typedPastInARow')) + 1
           await $.store.set('typedPastInARow', typed)
           await $.store.set('looksToSkip', looksToSkipAfter(typed))
@@ -504,7 +679,7 @@ export function register(on, options = {}) {
         return
       }
 
-      async function accept(text, seen, known) {
+      async function accept(text, { seen, storedSeen, known, telemetry }) {
         const parsed = parseProposedLine(text)
         if (parsed.kind !== 'line') {
           return { outcome: parsed.kind === 'none' ? 'none' : 'parse_failed', tag: undefined }
@@ -519,7 +694,35 @@ export function register(on, options = {}) {
         if (!isOfferDue(current?.askedTurn, e.turnId, ended.has(sid))) {
           return { outcome: 'stale', tag }
         }
-        await $.store.set('seen', [...seen, parsed.line].slice(-SEEN_MAX))
+        const liveView = current?.view ?? null
+        if (backlogOn && liveView !== null) {
+          // Only an explained panel shares the session with the backlog.  Any
+          // other view is a state the check gate would not have passed.
+          if (liveView.kind !== 'explained') return { outcome: 'stale', tag }
+          const live = liveBacklog(current, Date.now())
+          if (live.length >= BACKLOG_MAX) return { outcome: 'stale', tag }
+          const now = Date.now()
+          await updateRow(sid, {
+            offeredTurn: e.turnId,
+            backlog: [
+              ...live,
+              {
+                line: parsed.line,
+                tag,
+                proposedAt: now,
+                turnId: e.turnId,
+                step: e.index,
+                promptSeq: storedCount(current?.promptSeq),
+                // The official proposed record is emitted only when the note
+                // is actually displayed; these values make that record still
+                // describe the check that found it.
+                telemetry,
+              },
+            ],
+          })
+          return { outcome: 'queued', queued: true, depth: live.length + 1, tag }
+        }
+        await $.store.set('seen', [...storedSeen, parsed.line].slice(-SEEN_MAX))
         await updateRow(sid, {
           offeredTurn: e.turnId,
           tag,
@@ -537,7 +740,12 @@ export function register(on, options = {}) {
 
       async function check() {
         await updateRow(sid, { askedTurn: e.turnId })
-        const seen = await rememberSeen()
+        const storedSeen = await rememberSeen()
+        const current = rowOf(await $.store.get('sessions'), sid)
+        const queued = backlogOn ? liveBacklog(current, Date.now()) : []
+        // Lines waiting in the backlog are deduped and shown to the observer,
+        // but they only enter `seen` when they are actually displayed.
+        const seen = [...storedSeen, ...queued.map((item) => item.line)].slice(-SEEN_MAX)
         const known = stringLines(await $.store.get('known'))
         const debug = isDebugOn(
           await $.env.get('CLAUDE_CODE_YOU_SHOULD_KNOW_DEBUG').catch(() => undefined),
@@ -548,8 +756,14 @@ export function register(on, options = {}) {
         try {
           const result = await $.model.fork({ prompt: proposePrompt(seen, known) })
           usage = forkUsage(result)
+          const elapsed = Date.now() - startedAt
           outcome = result.isAnswered
-            ? await accept(result.text, seen, known)
+            ? await accept(result.text, {
+                seen,
+                storedSeen,
+                known,
+                telemetry: { latencyMs: elapsed, usage, offersShown: storedSeen.length },
+              })
             : { outcome: UNANSWERED_OUTCOMES[result.reason], tag: undefined }
         } catch {
           outcome = { outcome: 'error', tag: undefined }
@@ -573,6 +787,15 @@ export function register(on, options = {}) {
           } catch {
             // Debug rows are best effort.
           }
+        }
+        if (outcome.outcome === 'queued') {
+          // The official proposed event is deferred until the note is shown,
+          // so a note that is later dropped never counts as shown.
+          return backlogRecord({
+            outcome: 'queued',
+            depth: outcome.depth,
+            tag: outcome.tag,
+          })
         }
         return proposedRecord({
           ...outcome,
@@ -651,6 +874,17 @@ export function register(on, options = {}) {
       if (!known.some((topic) => topic.toLowerCase() === line.toLowerCase())) {
         await $.store.set('known', [...known, line].slice(-SEEN_MAX))
       }
+      if (!backlogOn) return
+      try {
+        const sessions = await $.store.get('sessions')
+        const row = rowOf(sessions, sid)
+        const backlog = withoutBacklogLine(row?.backlog, line)
+        if (Array.isArray(row?.backlog) && backlog.length !== row.backlog.length) {
+          await $.store.set('sessions', withRow(sessions, { ...(row ?? { id: sid }), backlog }))
+        }
+      } catch {
+        // Dropping a known line from the backlog is best effort.
+      }
     }
 
     async function clearView() {
@@ -664,6 +898,7 @@ export function register(on, options = {}) {
       } finally {
         await clearView()
       }
+      await advanceBacklog($, sid, backlogOn)
     }
 
     async function ask({ line, iteration }) {
@@ -688,6 +923,8 @@ export function register(on, options = {}) {
         shownAt: current.shownAt,
         iteration: iterationOf(current),
       })
+      // The feedback window closed; move on to the next earlier note.
+      await advanceBacklog($, sid, backlogOn)
     }
 
     async function fail(reason) {
@@ -763,6 +1000,8 @@ export function register(on, options = {}) {
       if (!filled) {
         void answer('off_failed', context)
         await fail('turn_off').catch(() => undefined)
+      } else {
+        await clearBacklog($, sid, 'dropped_off', backlogOn)
       }
     }
 
@@ -793,7 +1032,7 @@ export function register(on, options = {}) {
       }
     }
 
-    async function showExplanation(line, text, iteration) {
+    async function showExplanation(line, text, iteration, origin = {}) {
       const shownAt = Date.now()
       await updateViewForRender({
         kind: 'explained',
@@ -801,6 +1040,7 @@ export function register(on, options = {}) {
         text,
         iteration,
         shownAt,
+        ...origin,
       })
       forgetPrompts(promptOrigins, sid)
       $.ui.invalidate('ui.render')
@@ -809,10 +1049,10 @@ export function register(on, options = {}) {
       }
     }
 
-    async function explain(line, direction, iteration) {
+    async function explain(line, direction, iteration, origin = {}) {
       explaining.add(sid)
       try {
-        await updateViewForRender({ kind: 'explaining', line, iteration })
+        await updateViewForRender({ kind: 'explaining', line, iteration, ...origin })
         $.ui.invalidate('ui.render')
         const startedAt = Date.now()
         const result = await $.model.fork({ prompt: explainPrompt(line, direction) }).catch(
@@ -832,7 +1072,7 @@ export function register(on, options = {}) {
           direction !== undefined ? { text: direction.previous, iteration: iteration - 1 } : undefined
         const nextText = outcome === 'shown' ? { text, iteration } : previous
         if (nextText === undefined) await fail('explain')
-        else await showExplanation(line, nextText.text, nextText.iteration)
+        else await showExplanation(line, nextText.text, nextText.iteration, origin)
         await deliver($, record)
       } finally {
         explaining.delete(sid)
@@ -884,7 +1124,11 @@ export function register(on, options = {}) {
           run()
         }
         const iteration = iterationOf(view)
-        const recordThen = (value, after = clearView) =>
+        const clearAndAdvance = async () => {
+          await clearView()
+          await advanceBacklog($, sid, backlogOn)
+        }
+        const recordThen = (value, after = clearAndAdvance) =>
           finish(() => {
             void answer(value, { line: view.line, shownAt: view.shownAt, iteration })
             void after()
@@ -956,7 +1200,7 @@ export function register(on, options = {}) {
             responding.delete(sid)
           }
         }
-        return explainedRow(
+        const row = explainedRow(
           ui,
           line,
           cards,
@@ -977,18 +1221,25 @@ export function register(on, options = {}) {
               },
           tag,
         )
+        return view.fromBacklog === true
+          ? backlogFrame(ui, Date.now() - (view.proposedAt ?? shownAt ?? Date.now()), row)
+          : row
       }
 
       const ownsComposer = hasOwnComposer(e.surface) || external
-      return offerRow(
+      const row = offerRow(
         ui,
         line,
         {
           explain: once('yes_explain', () => {
             const explanation = view.explanation
+            const origin =
+              view.fromBacklog === true
+                ? { fromBacklog: true, proposedAt: view.proposedAt }
+                : undefined
             return explanation !== undefined && parseExplanation(explanation).length > 0
-              ? showExplanation(line, explanation, 1)
-              : explain(line, undefined, 1)
+              ? showExplanation(line, explanation, 1, origin)
+              : explain(line, undefined, 1, origin)
           }),
           knew: once('know_it', () => knewThis(line)),
           off: ownsComposer
@@ -1012,6 +1263,9 @@ export function register(on, options = {}) {
         },
         tag,
       )
+      return view.fromBacklog === true
+        ? backlogFrame(ui, Date.now() - (view.proposedAt ?? shownAt ?? Date.now()), row)
+        : row
     }
 
     const tree = renderView()
@@ -1039,6 +1293,7 @@ export function register(on, options = {}) {
     ended.add(e.sessionId)
     bridged.delete(e.sessionId)
     try {
+      await clearBacklog($, e.sessionId, 'dropped_session_end', backlogOn)
       const sessions = await $.store.get('sessions')
       const row = rowOf(sessions, e.sessionId)
       const view = row?.view

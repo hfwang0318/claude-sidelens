@@ -215,6 +215,39 @@ call，其他新增 call 仍失败。
   仍可作为手动回退；
 - 关闭（默认）时解释出现后仍只等待用户选择，`Chat in main session` 的 fill 路径不变。
 
+### 3.7 backlog（用户要求的额外能力）
+
+用于多会话并行、用户暂时顾不上某个会话的场景。默认关闭，且与 `autoSend` 互斥
+（`autoSend` 会立即清面板，backlog 无意义；同时开启时 `autoSend` 优先）。
+
+- manifest 声明 `userConfig.backlog`（boolean，默认 `false`）；
+- `explained` 面板挂着时，`turn.step` 的 skip 条件不再因 `view !== null` 直接跳过，
+  而是允许继续检查，直到 backlog 达到上限；
+- 检查结果不替换当前面板，而是写入 session row 的 `backlog`：
+  `{ line, tag, proposedAt, turnId, step, promptSeq, telemetry }`，只存标题，
+  不存解释；`telemetry` 保存 `latency_ms` / `usage` / `offers_shown`，供延后的
+  官方 proposed 事件使用；
+- 上限 `BACKLOG_MAX = 3`；TTL 取 `BACKLOG_TTL_MS = 30 分钟` 与
+  `BACKLOG_TTL_PROMPTS = 3 个用户 prompt` 的较小者，惰性清理；
+- 用户处理当前面板（`got_it` / `respond` / `know_it` / 反馈结束 / 20s 反馈超时）后，
+  队首以 `offer` 形式出队，view 带 `fromBacklog: true` 和 `proposedAt`；
+- 面板和其后的解释上方都加一行 `Earlier note · found Nm ago`，明确不是当前轮的内容；
+- 在 backlog offer 上按 `Learn more` 时重新 `explain()`，解释基于当前 transcript；
+- 用户连续 type-past 一个 offer（`ignored_submit`）时清空 backlog 并沿用
+  `looksToSkip` 退避；`turn_off` 和 `session.end` 也清空；
+- 队列中的 line 会合并进 `proposePrompt` 的 `seen` 参数做去重，但只有真正展示时才
+  写入官方 `seen`；
+- 出队刻意绕过 `isOfferDue` 的同 turn 规则，由 TTL 控制新鲜度——这是 backlog 的核心
+  intentional difference；
+- 遥测：入队时**不发**官方 `you_should_know_proposed`，只发项目专属
+  `you_should_know_backlog` 的 `queued`；官方 proposed 延后到笔记真正展示时发出，
+  沿用入队时保存的 `step` / `latency_ms` / `usage` / `offers_shown`，并带
+  `queued: true`。因此被丢弃的笔记不会被计入 `outcome = shown`；
+- `you_should_know_backlog` 的 `shown` / `dropped_ttl` / `dropped_ignored` /
+  `dropped_off` / `dropped_session_end` 带 `wait_ms` / `age_ms` / `depth`，
+  是评估 backlog 实际使用量的准确口径；
+- 不新增 hook、`$` 调用、env 或 state 键，scan 仍是 6 hooks / 19 calls。
+
 ## 4. UI 结构
 
 官方在 `ui.render` 的 `{ component: "AbovePrompt" }` 里自绘一条 band。树形大致：
@@ -426,7 +459,7 @@ $ claude plugin validate .
 
 ### 9.2 行为测试（`claude plugin test`）
 
-19 个行为/纯函数测试覆盖（另有 §9.5 的 13 个官方差分测试）：
+28 个行为/纯函数测试覆盖（另有 §9.5 的 13 个官方差分测试）：
 
 1. 三方 model 的 fork 产生 offer，band 文本/按钮正确，Learn more 进入解释；
 2. 第 6 步才检查，重复建议 dedupe；
@@ -445,9 +478,17 @@ $ claude plugin validate .
 13. 反馈行的 `4: Turn off suggestions` 直接关闭并填入禁用命令（本轮实测发现并修复的回归）；
 14. 官方 `cc-plugin-you-should-know@builtin` 启用时，sidelens 不 fork、不画 band，并清掉旧 view；
 15. 官方旧名（`you-should-know@builtin`）同样触发让位；
-16–19. 纯函数测试：`learn: none`、完整 proposal、解释卡片/sketch、off 命令识别。
+16–19. 纯函数测试：`learn: none`、完整 proposal、解释卡片/sketch、off 命令识别；
+20. `backlog`：解释挂着时继续检查，新建议入队而不替换面板；
+21. 处理解释后队首以 `Earlier note` offer 出队；
+22. backlog offer 的 `Learn more` 重新 fork，并保留 `Earlier note` 标签；
+23. 队列上限 3，满后不再 fork；
+24. 3 个 prompt 后队列项过期并记 `dropped_ttl`；
+25. 连续 type-past 清空 backlog 并记 `dropped_ignored`；
+26. `autoSend` 开启时 backlog 不生效；
+27–28. backlog 纯函数：`liveBacklog` / `withoutBacklogLine`、`backlogLabel`。
 
-结果：全部测试文件合计 `51 pass, 0 fail`。
+结果：全部测试文件合计 `60 pass, 0 fail`。
 
 ### 9.3 真实 provider 验证
 
