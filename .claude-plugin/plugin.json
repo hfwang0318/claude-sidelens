@@ -20,6 +20,13 @@
       "title": "Keep earlier notes in a backlog",
       "description": "While an explanation is waiting, keep checking and hold up to three new notes. When you handle the open note, the next earlier note appears, labeled with when it was found. Off while autoSend is on.",
       "default": false
+    },
+    "checkCadence": {
+      "type": "string",
+      "title": "When to check for notes",
+      "description": "fixed keeps the built-in six-step cadence. turnEnd checks once, after a turn finishes, so short turns are covered and long turns are judged on completed work. Off while autoSend is on.",
+      "options": ["fixed", "turnEnd"],
+      "default": "fixed"
     }
   },
   "keywords": [

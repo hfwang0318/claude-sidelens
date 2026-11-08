@@ -170,6 +170,10 @@ prompt box that already has text keeps its draft untouched.
 
 ## Backlog option
 
+With all capability switches explicitly off, `tests/off-path.test.ts` pins the
+official path: checks only at steps 6, 12, 18, no `backlog` or `promptSeq`
+fields, no backlog event, and no project-only telemetry properties.
+
 The CUA session above ran with `backlog` at its default (`false`). The opt-in
 path is covered deterministically by `tests/backlog.test.ts`: while an
 explanation waits, the plugin keeps checking and queues up to three notes
@@ -178,3 +182,20 @@ without replacing the panel; handling the explanation shows the first note as an
 three, expires after the configured time or three prompts, and is cleared when
 the person types past an offer. `autoSend` and `backlog` together leave the
 backlog off.
+
+## Cadence option
+
+The CUA session above ran with the default `fixed` cadence. `turnEnd` is covered
+deterministically by `tests/cadence.test.ts`: a one-step turn is checked when its
+`stopReason` is `end_turn`; `tool_use` steps wait for the step that finishes the
+turn; `fixed` still ignores a one-step turn; and `autoSend` wins over `turnEnd`,
+so an auto-sent note cannot start a turn that triggers another check. With
+`backlog` on, the same suite drains a turn: the first note is shown, extra
+passes run in the background, the second note is queued and labeled **Another
+note**, and draining stops on `none` or without a backlog. The closed-early race
+is covered too: if the first panel is gone when an extra pass lands, the queued
+note is promoted immediately. A turn that ends while a check or drain still
+holds the per-session lock is retried after the lock clears; the test gates the
+second fork to hold the lock deterministically. One thing still needs a real
+session: whether `$.model.fork` at the end-of-turn check sees the completed
+turn's final answer.

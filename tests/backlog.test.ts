@@ -50,6 +50,7 @@ test('backlogLabel marks a note as earlier', () => {
   expect(backlogLabel(30_000)).toBe('Earlier note \xB7 found just now')
   expect(backlogLabel(12 * 60_000)).toBe('Earlier note \xB7 found 12m ago')
   expect(backlogLabel(2 * 60 * 60_000)).toBe('Earlier note \xB7 found 2h ago')
+  expect(backlogLabel(30_000, true)).toBe('Another note \xB7 found just now')
 })
 
 test(

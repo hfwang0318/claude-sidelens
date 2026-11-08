@@ -155,6 +155,41 @@ also emit `you_should_know_backlog` with `outcome`, `wait_ms`, `age_ms` and
 `depth`. No hook and no `$` call is added: the scan stays 6 hooks / 19 calls.
 The behavior is covered by `tests/backlog.test.ts`.
 
+The backlog queue and `promptSeq` live in the per-session row, but the
+observer's memory — `seen`, `known`, `typedPastInARow` and `looksToSkip` — stays
+plugin-level and is shared by every session, exactly as in the official mod.
+There is no cross-session isolation to assert, so the suite does not test one;
+README's "Parallel sessions" section documents the consequences.
+
+A fourth requested addition is `userConfig.checkCadence` (string, default
+`fixed`). `turnEnd` reads `stopReason` from the `turn.step` result and checks
+once when the turn finishes (`end_turn`, `max_tokens`, `stop_sequence`,
+`refusal`); `tool_use`, `pause_turn`, `compaction` and `null` keep waiting. It
+adds no hook and no `$` call, so the scan stays 6 hooks / 19 calls. `autoSend`
+wins over `turnEnd`: an auto-sent note starts a new turn, which would otherwise
+trigger another end-of-turn check and chain notes into the main agent. Proposals
+found this way carry `trigger: 'turnEnd'` (a project-only property added only
+when set, so official fixture records are unchanged).
+
+When `backlog` is also on, a turn that yields a note is drained: the same
+`proposePrompt` is called again with the found lines in `seen`, up to
+`TURN_DRAIN_MAX = 3` notes. The first note is shown immediately; later passes run
+in the background and queue behind it as backlog items labeled **Another note**
+rather than **Earlier note**. Drain stops on `none`, at three notes, or when the
+backlog is full. After each extra pass an idle session — no open view — promotes
+the queue head immediately, so a note queued after the person closed the first
+panel is not stranded; `advanceBacklog` also refuses to overwrite a view that is
+open at that moment. A turn whose end check arrives while an earlier check or
+drain still holds the per-session lock is retried once that work settles, with
+the retry bound to its own turn's event, rather than being dropped. Each extra
+pass adds `pass: 2` or `pass: 3` to the official proposed record; the prompt and
+parser are unchanged. `tests/cadence.test.ts` covers a one-step turn, tool-use
+steps, the `fixed` default, the `autoSend` exclusion, draining, stopping on
+`none`, the backlog requirement, the closed-early race, and the in-flight lock
+retry. `tests/off-path.test.ts` pins the all-off path: the six-step cadence, no
+`backlog`/`promptSeq` writes, no `you_should_know_backlog` event, and no
+`queued`/`trigger`/`pass` properties.
+
 ## The audit layer
 
 The audit extension adds no hook and no `$` call of its own, so the scan above is

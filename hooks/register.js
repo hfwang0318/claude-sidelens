@@ -25,6 +25,7 @@ import {
   RESPOND_BOX_BUSY,
   RESPOND_NOT_FILLED,
   SEEN_MAX,
+  TURN_DRAIN_MAX,
   UNANSWERED_OUTCOMES,
 } from '../lib/constants.js'
 import {
@@ -39,6 +40,7 @@ import {
   isOpenView,
   isOptIn,
   isSameShowing,
+  isTurnEnd,
   isUnattendedInFlight,
   iterationOf,
   keptPastPrompt,
@@ -202,6 +204,9 @@ async function advanceBacklog($, sid, enabled) {
       }
       return
     }
+    // Never replace a panel that is open right now; the person's next action
+    // pops the queue.  An idle drain pass calls this again after enqueueing.
+    if (row?.view !== undefined && row?.view !== null) return
     const [item, ...rest] = live
     await $.store.set(
       'sessions',
@@ -214,6 +219,7 @@ async function advanceBacklog($, sid, enabled) {
           line: item.line,
           tag: item.tag,
           fromBacklog: true,
+          ...(item.drain === true && { fromDrain: true }),
           proposedAt: item.proposedAt,
           shownAt: now,
         },
@@ -234,6 +240,8 @@ async function advanceBacklog($, sid, enabled) {
         latencyMs: Number.isFinite(deferred.latencyMs) ? deferred.latencyMs : 0,
         usage: deferred.usage ?? null,
         offersShown: Number.isFinite(deferred.offersShown) ? deferred.offersShown : 0,
+        ...(deferred.trigger !== undefined && { trigger: deferred.trigger }),
+        ...(deferred.pass !== undefined && { pass: deferred.pass }),
         tag: item.tag,
       }),
     )
@@ -257,6 +265,19 @@ async function advanceBacklog($, sid, enabled) {
         tag: item.tag,
       }),
     )
+  } catch {
+    return
+  }
+}
+
+// A drain pass can enqueue after the person already closed the first panel.
+// With nothing else left to trigger a pop, promote the queue head now.
+async function popBacklogIfIdle($, sid, enabled) {
+  if (!enabled) return
+  try {
+    const row = rowOf(await $.store.get('sessions'), sid)
+    if (row?.view !== undefined && row?.view !== null) return
+    await advanceBacklog($, sid, enabled)
   } catch {
     return
   }
@@ -495,7 +516,16 @@ export function register(on, options = {}) {
   // The backlog only makes sense when the panel waits for the person; with
   // autoSend the panel closes at once, so autoSend wins.
   const backlogOn = options?.backlog === true && !autoSend
+  // `fixed` is the official six-step cadence.  `turnEnd` checks once, when the
+  // step's stopReason says the turn finished.  autoSend wins over it: every
+  // auto-sent note starts a new turn, which would otherwise trigger another
+  // end-of-turn check and chain notes into the main agent.
+  const cadence =
+    options?.checkCadence === 'turnEnd' && !autoSend ? 'turnEnd' : 'fixed'
   const inFlight = new Map()
+  // A turn-end check that arrives while a check (or its drain) is still
+  // running is retried once that one settles instead of being dropped.
+  const pendingDue = new Map()
   const explaining = new Set()
   const askedTimers = new Map()
   const responding = new Set()
@@ -576,7 +606,7 @@ export function register(on, options = {}) {
       }
     }
 
-    async function runStep(sid, surfaces) {
+    async function runStep(sid, surfaces, { atEnd = false, allowCheck = true } = {}) {
       revive(ended, sid)
       const origin = promptedAtTurnStart(promptOrigins, sid, e.index)
       if (e.index === 0) promptOrigins.delete(sid)
@@ -612,13 +642,17 @@ export function register(on, options = {}) {
       // checks: new notes queue instead of replacing the open panel.
       const blockedByView =
         view !== null && !(backlogOn && view.kind === 'explained' && backlogRoom)
+      const due = atEnd || (e.index > 0 && e.index % CHECK_EVERY === 0)
       const skip =
-        !(e.index > 0 && e.index % CHECK_EVERY === 0) ||
+        !due ||
         row?.offeredTurn === e.turnId ||
         blockedByView ||
         !isBandWatched(surfaces, watched, bridged.has(sid))
 
-      if (e.index === 0) {
+      // The turn-start survival logic belongs to the next turn's first step.
+      // An end-of-turn check at index 0 (a one-step turn) skips it here; the
+      // next turn applies it as usual.
+      if (e.index === 0 && !atEnd) {
         if (view?.kind === 'asked') {
           askedTimers.get(sid)?.cancel()
           askedTimers.delete(sid)
@@ -670,16 +704,24 @@ export function register(on, options = {}) {
         return
       }
 
+      // In turnEnd mode the periodic path only maintains state; the one check
+      // runs after the step's result says the turn finished.
+      if (!allowCheck) return
       if (skip) return
 
       let looksToSkip = Math.min(LOOKS_TO_SKIP_MAX, storedCount(await $.store.get('looksToSkip')))
-      if (inFlight.has(sid)) return
+      if (inFlight.has(sid)) {
+        // Capture this invocation's `e`: the retry must run with this turn's
+        // event, not the event of the check that happened to be in flight.
+        if (atEnd) pendingDue.set(sid, { run: () => runStep(sid, surfaces, { atEnd }) })
+        return
+      }
       if (looksToSkip > 0) {
         await $.store.set('looksToSkip', looksToSkip - 1)
         return
       }
 
-      async function accept(text, { seen, storedSeen, known, telemetry }) {
+      async function accept(text, { seen, storedSeen, known, telemetry, drain = false }) {
         const parsed = parseProposedLine(text)
         if (parsed.kind !== 'line') {
           return { outcome: parsed.kind === 'none' ? 'none' : 'parse_failed', tag: undefined }
@@ -695,10 +737,14 @@ export function register(on, options = {}) {
           return { outcome: 'stale', tag }
         }
         const liveView = current?.view ?? null
-        if (backlogOn && liveView !== null) {
-          // Only an explained panel shares the session with the backlog.  Any
-          // other view is a state the check gate would not have passed.
-          if (liveView.kind !== 'explained') return { outcome: 'stale', tag }
+        if (backlogOn && (liveView !== null || drain)) {
+          // A normal check only shares the session with an explained panel.
+          // A drain pass may also queue behind the offer its first pass showed.
+          const queueable =
+            liveView === null ||
+            liveView.kind === 'explained' ||
+            (drain && liveView.kind === 'offer')
+          if (!queueable) return { outcome: 'stale', tag }
           const live = liveBacklog(current, Date.now())
           if (live.length >= BACKLOG_MAX) return { outcome: 'stale', tag }
           const now = Date.now()
@@ -713,6 +759,7 @@ export function register(on, options = {}) {
                 turnId: e.turnId,
                 step: e.index,
                 promptSeq: storedCount(current?.promptSeq),
+                ...(drain && { drain: true }),
                 // The official proposed record is emitted only when the note
                 // is actually displayed; these values make that record still
                 // describe the check that found it.
@@ -738,80 +785,133 @@ export function register(on, options = {}) {
         return { outcome: 'shown', tag }
       }
 
-      async function check() {
+      // `drain` runs up to TURN_DRAIN_MAX passes on the completed turn.  The
+      // first pass is returned at once; later passes run in the background and
+      // deliver their own records, queueing behind the first note.
+      async function check({ drain = false } = {}) {
         await updateRow(sid, { askedTurn: e.turnId })
-        const storedSeen = await rememberSeen()
-        const current = rowOf(await $.store.get('sessions'), sid)
-        const queued = backlogOn ? liveBacklog(current, Date.now()) : []
-        // Lines waiting in the backlog are deduped and shown to the observer,
-        // but they only enter `seen` when they are actually displayed.
-        const seen = [...storedSeen, ...queued.map((item) => item.line)].slice(-SEEN_MAX)
-        const known = stringLines(await $.store.get('known'))
         const debug = isDebugOn(
           await $.env.get('CLAUDE_CODE_YOU_SHOULD_KNOW_DEBUG').catch(() => undefined),
         )
-        const startedAt = Date.now()
-        let usage = null
-        let outcome
-        try {
-          const result = await $.model.fork({ prompt: proposePrompt(seen, known) })
-          usage = forkUsage(result)
-          const elapsed = Date.now() - startedAt
-          outcome = result.isAnswered
-            ? await accept(result.text, {
-                seen,
-                storedSeen,
-                known,
-                telemetry: { latencyMs: elapsed, usage, offersShown: storedSeen.length },
-              })
-            : { outcome: UNANSWERED_OUTCOMES[result.reason], tag: undefined }
-        } catch {
-          outcome = { outcome: 'error', tag: undefined }
-        }
-        const latencyMs = Date.now() - startedAt
-        if (debug) {
+
+        async function runPass(pass) {
+          const storedSeen = await rememberSeen()
+          const current = rowOf(await $.store.get('sessions'), sid)
+          const queued = backlogOn ? liveBacklog(current, Date.now()) : []
+          // Lines waiting in the backlog are deduped and shown to the observer,
+          // but they only enter `seen` when they are actually displayed.
+          const seen = [...storedSeen, ...queued.map((item) => item.line)].slice(-SEEN_MAX)
+          const known = stringLines(await $.store.get('known'))
+          const startedAt = Date.now()
+          let usage = null
+          let outcome
           try {
-            const current = rowOf(await $.store.get('sessions'), sid)
-            const number = (current?.checked ?? 0) + 1
-            await updateRow(sid, {
-              checked: number,
-              checks: checksWith(checksOf(current?.checks), {
-                number,
-                step: e.index,
-                outcome: outcome.outcome,
-                latencyMs,
-                at: Date.now(),
-              }),
-            })
-            $.ui.invalidate('ui.render')
+            const result = await $.model.fork({ prompt: proposePrompt(seen, known) })
+            usage = forkUsage(result)
+            const elapsed = Date.now() - startedAt
+            outcome = result.isAnswered
+              ? await accept(result.text, {
+                  seen,
+                  storedSeen,
+                  known,
+                  drain: drain && pass > 1,
+                  telemetry: {
+                    latencyMs: elapsed,
+                    usage,
+                    offersShown: storedSeen.length,
+                    ...(atEnd && { trigger: 'turnEnd' }),
+                    ...(pass > 1 && { pass }),
+                  },
+                })
+              : { outcome: UNANSWERED_OUTCOMES[result.reason], tag: undefined }
           } catch {
-            // Debug rows are best effort.
+            outcome = { outcome: 'error', tag: undefined }
+          }
+          const latencyMs = Date.now() - startedAt
+          if (debug) {
+            try {
+              const current = rowOf(await $.store.get('sessions'), sid)
+              const number = (current?.checked ?? 0) + 1
+              await updateRow(sid, {
+                checked: number,
+                checks: checksWith(checksOf(current?.checks), {
+                  number,
+                  step: e.index,
+                  outcome: outcome.outcome,
+                  latencyMs,
+                  at: Date.now(),
+                }),
+              })
+              $.ui.invalidate('ui.render')
+            } catch {
+              // Debug rows are best effort.
+            }
+          }
+          const record =
+            outcome.outcome === 'queued'
+              ? // The official proposed event is deferred until the note is
+                // shown, so a note later dropped never counts as shown.
+                backlogRecord({
+                  outcome: 'queued',
+                  depth: outcome.depth,
+                  tag: outcome.tag,
+                })
+              : proposedRecord({
+                  ...outcome,
+                  step: e.index,
+                  latencyMs,
+                  usage,
+                  offersShown: (await rememberSeen()).length,
+                  ...(atEnd && { trigger: 'turnEnd' }),
+                  ...(pass > 1 && { pass }),
+                })
+          return {
+            record,
+            found: outcome.outcome === 'shown' || outcome.outcome === 'queued',
           }
         }
-        if (outcome.outcome === 'queued') {
-          // The official proposed event is deferred until the note is shown,
-          // so a note that is later dropped never counts as shown.
-          return backlogRecord({
-            outcome: 'queued',
-            depth: outcome.depth,
-            tag: outcome.tag,
-          })
+
+        const first = await runPass(1)
+        if (!drain || !first.found) return { record: first.record, drainTask: null }
+        return {
+          record: first.record,
+          drainTask: async () => {
+            for (let pass = 2; pass <= TURN_DRAIN_MAX; pass += 1) {
+              if (!backlogOn) return
+              const live = liveBacklog(rowOf(await $.store.get('sessions'), sid), Date.now())
+              if (live.length >= BACKLOG_MAX) {
+                await popBacklogIfIdle($, sid, backlogOn)
+                return
+              }
+              const further = await runPass(pass)
+              await deliver($, further.record)
+              // The person may have closed the first panel while this pass ran;
+              // promote what was just queued instead of leaving it stranded.
+              await popBacklogIfIdle($, sid, backlogOn)
+              if (!further.found) return
+            }
+          },
         }
-        return proposedRecord({
-          ...outcome,
-          step: e.index,
-          latencyMs,
-          usage,
-          offersShown: (await rememberSeen()).length,
-        })
       }
 
       inFlight.set(
         sid,
-        check()
-          .then((record) => deliver($, record))
+        (async () => {
+          const { record, drainTask } = await check({
+            drain: atEnd && cadence === 'turnEnd' && backlogOn,
+          })
+          await deliver($, record)
+          if (drainTask !== null) await drainTask()
+        })()
           .catch(() => undefined)
-          .finally(() => inFlight.delete(sid)),
+          .finally(() => {
+            inFlight.delete(sid)
+            const pending = pendingDue.get(sid)
+            if (pending === undefined) return
+            pendingDue.delete(sid)
+            if (ended.has(sid)) return
+            void pending.run().catch(() => undefined)
+          }),
       )
     }
 
@@ -821,7 +921,7 @@ export function register(on, options = {}) {
         if (surfaces.length === 0) return
         if (isBandShown(surfaces, watched)) {
           const sid = await $.session.id()
-          await runStep(sid, surfaces)
+          await runStep(sid, surfaces, { allowCheck: cadence === 'fixed' })
         }
       })
       .catch(() => undefined)
@@ -834,6 +934,18 @@ export function register(on, options = {}) {
           const held = auditSteps.get(sid) ?? []
           held.push({ answer: finished.answer, toolUses: finished.toolUses, turnId: e.turnId })
           auditSteps.set(sid, held.slice(-40))
+        })
+        .catch(() => undefined)
+    }
+    if (cadence === 'turnEnd' && isTurnEnd(finished?.stopReason)) {
+      $.session
+        .surfaces()
+        .then(async (surfaces) => {
+          if (surfaces.length === 0) return
+          if (isBandShown(surfaces, watched)) {
+            const sid = await $.session.id()
+            await runStep(sid, surfaces, { atEnd: true })
+          }
         })
         .catch(() => undefined)
     }
@@ -1222,7 +1334,12 @@ export function register(on, options = {}) {
           tag,
         )
         return view.fromBacklog === true
-          ? backlogFrame(ui, Date.now() - (view.proposedAt ?? shownAt ?? Date.now()), row)
+          ? backlogFrame(
+              ui,
+              Date.now() - (view.proposedAt ?? shownAt ?? Date.now()),
+              row,
+              view.fromDrain === true,
+            )
           : row
       }
 
@@ -1235,7 +1352,11 @@ export function register(on, options = {}) {
             const explanation = view.explanation
             const origin =
               view.fromBacklog === true
-                ? { fromBacklog: true, proposedAt: view.proposedAt }
+                ? {
+                    fromBacklog: true,
+                    proposedAt: view.proposedAt,
+                    ...(view.fromDrain === true && { fromDrain: true }),
+                  }
                 : undefined
             return explanation !== undefined && parseExplanation(explanation).length > 0
               ? showExplanation(line, explanation, 1, origin)
@@ -1264,7 +1385,12 @@ export function register(on, options = {}) {
         tag,
       )
       return view.fromBacklog === true
-        ? backlogFrame(ui, Date.now() - (view.proposedAt ?? shownAt ?? Date.now()), row)
+        ? backlogFrame(
+            ui,
+            Date.now() - (view.proposedAt ?? shownAt ?? Date.now()),
+            row,
+            view.fromDrain === true,
+          )
         : row
     }
 
@@ -1292,6 +1418,7 @@ export function register(on, options = {}) {
   on('session.end', async ($, e, next) => {
     ended.add(e.sessionId)
     bridged.delete(e.sessionId)
+    pendingDue.delete(e.sessionId)
     try {
       await clearBacklog($, e.sessionId, 'dropped_session_end', backlogOn)
       const sessions = await $.store.get('sessions')

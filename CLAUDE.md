@@ -46,9 +46,11 @@ isAvailable = complianceTaintsSettled()
 - 插件状态 key：`sidelens.aboutOpen`
 - 禁用命令：`/plugin disable sidelens`
 - `defaultEnabled: false`（与官方一致，需要显式启用）
-- 测试：**60 pass, 0 fail**
+- 测试：**71 pass, 0 fail**
   - 15 个 sidelens 行为测试（含 2 个 autoSend 测试）
   - 9 个 backlog 测试（入队/出队/上限/TTL/退避/互斥/纯函数）
+  - 10 个 cadence 测试（turnEnd 单步/工具步、fixed、autoSend 互斥、drain、空闲弹出、锁重试、纯函数）
+  - 1 个 off-path 回归测试（全部开关关闭时保持官方 6 步路径）
   - 4 个 parser 单元测试
   - 13 个官方差分测试
   - 11 个审查层纯函数测试（条款切分、证据包、协议、开关）
@@ -175,6 +177,9 @@ intentional extra，其他新增 call 仍然失败。
   入队时的文本；
 - type-past offer（`ignored_submit`）、`turn_off`、`session.end` 清空 backlog；
   队列 line 会合并进 `proposePrompt` 的 `seen` 做去重，但展示前不写入官方 `seen`；
+- backlog 队列、`promptSeq`、session row 和 `aboutOpen` 按 session 存；但
+  `seen` / `known` / `typedPastInARow` / `looksToSkip` 仍是插件级共享状态，所有
+  session 共用（官方行为，为 parity 保留）；
 - 出队刻意绕过 `isOfferDue` 的同 turn 规则，由 TTL 控制新鲜度；这是本能力唯一的
   intentional difference，必须写进 PARITY；
 - 遥测：入队只发项目专属 `you_should_know_backlog` 的 `queued`；官方 `proposed`
@@ -186,12 +191,47 @@ intentional extra，其他新增 call 仍然失败。
 - 不新增 hook、`$` 调用、env 或 state 键，scan 仍是 6 hooks / 19 calls；
 - 关闭（默认）时所有官方路径、UI 树和 fixture 完全不变。
 
+### 3.7 用户要求的 intentional extra：checkCadence
+
+官方固定每 6 个 model step 检查一次。`checkCadence: "turnEnd"` 改为在回合完成时
+检查一次，解决“短回合不到 6 步永远不检查”和“长回合基于未完成工作给建议”的问题。
+
+- manifest 的 `userConfig.checkCadence`（string，`options: ["fixed", "turnEnd"]`，
+  `default: "fixed"`）是开关；`fixed` 保持官方行为；
+- 不新增 hook：`turn.step` 是流式事件，`yield* next(e)` 的结果带 `stopReason`；
+  `isTurnEnd()` 接受 `end_turn` / `max_tokens` / `stop_sequence` / `refusal`，
+  `tool_use` / `pause_turn` / `compaction` / `null` 继续等；
+- `runStep(sid, surfaces, { atEnd, allowCheck })`：turnEnd 模式下，每个 step 的
+  常规调用只维护状态（`allowCheck: false`），回合结束时用 `atEnd: true` 检查一次；
+- 单步回合的 index 是 0，`atEnd` 检查会跳过 turn-start survival 逻辑，
+  否则会提前 return；下一次回合开始时照常处理 survival；
+- **`autoSend` 与 `turnEnd` 互斥，`autoSend` 优先**：自动发送的笔记会开启新回合，
+  若不互斥，新回合结束又会检查，形成链式发送；
+- 检查结果带 `trigger: "turnEnd"`（项目专属可选字段）；队列项延后的官方 proposed
+  也会带上该字段；
+- **drain（需要 `backlog`）**：第一次检查找到内容后，把它放进 `seen` 再问，最多
+  `TURN_DRAIN_MAX = 3` 条；第一次结果立即展示/入队，后续 pass 在后台跑，
+  额外条目入 backlog 并带 `drain: true`，出队时标为
+  `Another note · found just now`（普通积压项仍是 `Earlier note`）；
+- drain 在以下情况停止：某次返回 `none`、backlog 已满、达到 3 条；
+  `autoSend` 关闭时才有 drain（autoSend 优先会把 cadence 回退为 fixed）；
+- drain 每次入队后调用 `popBacklogIfIdle`：如果当前没有打开的面板，立即把队首
+  弹出；`advanceBacklog` 增加了“当前已有 view 时不覆盖”的守卫，避免和用户操作
+  竞态；这修的是“补查期间用户先关掉第一条，第二条永远不弹”的问题；
+- `atEnd` 检查遇到 `inFlight`（当前 check 或 drain 未结束）时不丢弃：`pendingDue`
+  保存**本次 hook 调用自己的 retry 闭包**（捕获本回合的 `e`，不能复用旧回合的
+  `runStep` 闭包），当前任务 finally 时重试；后到的回合覆盖 pending；`session.end`
+  清除 pending；
+- 每次 drain pass 的 telemetry 带 `pass: 2/3`；队列项延后的 proposed 也带该字段；
+- 所有官方门控（view、`offeredTurn`、`isBandWatched`、`looksToSkip`、backlog）不变；
+- 不新增 `$` 调用，scan 仍是 6 hooks / 19 calls；关闭时行为与官方一致。
+
 ---
 
 ## 4. 代码结构
 
 ```text
-.claude-plugin/plugin.json   manifest；name、defaultEnabled:false、types、userConfig.autoSend/backlog
+.claude-plugin/plugin.json   manifest；name、defaultEnabled:false、types、userConfig.autoSend/backlog/checkCadence
 .claude-plugin/icon.png      插件图标
 hooks/hooks.json             指向 hooks/register.js
 hooks/register.js            6 个 hooks + 所有 $. 调用 + 业务编排 + backlog 顶层 helper
@@ -207,6 +247,8 @@ lib/ledger.js               审查层：从 step 结果提取文件/命令/读�
 types/index.d.ts            sidelens.aboutOpen 状态声明
 tests/sidelens.test.ts      行为测试（fork/UI/状态/禁用）
 tests/backlog.test.ts       backlog 纯函数与行为测试
+tests/cadence.test.ts       checkCadence turnEnd 与互斥测试
+tests/off-path.test.ts      全部开关关闭时的官方路径回归
 tests/parse.test.ts         parser 单元测试
 tests/audit.test.ts         审查层纯函数测试
 tests/audit-layer.test.ts   审查层接线测试
@@ -340,9 +382,11 @@ npm run test              # 观察哪些 case/path 变化
 - [ ] `userConfig.autoSend` 与 `userConfig.backlog` 都保持 `default: false`；
       关闭时解释出现后仍等待用户选择，`Chat in main session` 只 fill、不 submit。
 - [ ] `autoSend` 与 `backlog` 同时开启时 `autoSend` 优先，backlog 不生效。
+- [ ] `autoSend` 与 `checkCadence: "turnEnd"` 同时开启时 `autoSend` 优先，
+      否则自动发送的新回合会链式触发下一次检查。
 - [ ] 接收 `$` 的 backlog helper 是 `hooks/register.js` 顶层函数，不在 `register()` 内定义。
 - [ ] 所有 `$` 调用仍在 `hooks/register.js`；`lib/` 保持纯函数。
-- [ ] `npm run validate` 通过；`npm run test` 60+ pass。
+- [ ] `npm run validate` 通过；`npm run test` 71+ pass；off-path 测试仍通过。
 - [ ] 如果官方版本变了：fixture 已更新、版本号/文档已更新、`parity:check` 通过。
 - [ ] 如果改了可观察行为：ANALYSIS/PARITY/README 已同步。
 - [ ] 没有手改 `tests/parity/fixtures/official.mjs`。
@@ -353,7 +397,13 @@ npm run test              # 观察哪些 case/path 变化
 ## 8. 已知限制 / 非目标
 
 - `claude -p` 不画 band；与官方一致，不为它加特殊逻辑。
-- 需要至少 6 个 model step 才检查；一问一答不会触发。
+- 默认需要至少 6 个 model step 才检查；一问一答不会触发。`checkCadence: "turnEnd"`
+  可改为回合完成时检查，但“fork 已能看到最终答复”仍需真实会话验证。
+- `checkCadence: "turnEnd"` 与 `autoSend` 互斥（autoSend 优先），避免自动发送
+  开启的新回合再次触发检查。
+- `seen` / `known` / `typedPastInARow` / `looksToSkip` 是插件级共享状态：多会话
+  并行时，一个会话的 `Knew` 或 type-past 会抑制其他会话的建议。这是官方行为，
+  为 parity 保留；只有 session row、backlog 队列和 `aboutOpen` 是按 session 存的。
 - 三方 endpoint 必须支持 tool-less fork；不支持时返回 `api_error`，不显示建议。
 - HIPAA/ZDR/LDR 排除无法通过公开 API 复现；敏感环境不要启用。
 - Hook 编排/异步时序没有做官方 trace replay，由行为测试 + CUA 兜底。

@@ -25,8 +25,10 @@ name in `$.state` and in the disable command, the removal of the
 additions: when the official mod is enabled, sidelens soft-suspends for that
 plugin load and lets the official mod draw; an opt-in `autoSend` setting sends
 the note to the main agent and closes the panel as soon as the explanation
-appears; and an opt-in `backlog` setting keeps checking while an explanation
-waits, then shows earlier notes one at a time, explicitly labeled. See
+appears; an opt-in `backlog` setting keeps checking while an explanation waits,
+then shows earlier notes one at a time, explicitly labeled; and an opt-in
+`checkCadence` setting can check once per completed turn instead of every six
+steps. See
 [the analysis](docs/ANALYSIS.md) for the full comparison.
 
 For development rules, the current parity baseline, and a full document index,
@@ -128,14 +130,16 @@ with screenshots and findings in [docs/TESTING.md](docs/TESTING.md).
 
 ## Settings
 
-The plugin declares two options, both **off by default**. They appear in
-`/config` as **Auto-send to main agent** and **Keep earlier notes in a
-backlog**; changing either reloads the plugin, so no restart is needed.
+The plugin declares three options, all **off by default**. They appear in
+`/config` as **Auto-send to main agent**, **Keep earlier notes in a backlog**,
+and **When to check for notes**; changing any of them reloads the plugin, so no
+restart is needed.
 
 | Option | Default | Effect |
 | --- | --- | --- |
 | `autoSend` | `false` | As soon as an explanation appears, the note is sent to the main agent as a prompt and the panel closes, exactly as after choosing **Chat in main session**. No extra action is needed. |
 | `backlog` | `false` | While an explanation is waiting, checks keep running and hold up to three new notes. When you handle the open note, the next one appears as an **Earlier note · found Nm ago** offer. Notes expire after 30 minutes or three of your prompts, whichever comes first. Ignored while `autoSend` is on. |
+| `checkCadence` | `"fixed"` | `fixed` keeps the built-in six-step cadence. `turnEnd` checks once, after each completed turn, so short turns are covered and long turns are judged on finished work. With `backlog` on, a turn that yields a note is asked again (up to 3 notes), and the extras wait in the backlog as **Another note**. Ignored while `autoSend` is on: an auto-sent note starts a new turn, which would otherwise chain another check. |
 
 The settings can also be set in your user `settings.json` (project settings are
 ignored for plugin options):
@@ -144,7 +148,11 @@ ignored for plugin options):
 {
   "pluginConfigs": {
     "sidelens@claude-sidelens": {
-      "options": { "autoSend": false, "backlog": true }
+      "options": {
+        "autoSend": false,
+        "backlog": true,
+        "checkCadence": "turnEnd"
+      }
     }
   }
 }
@@ -157,6 +165,15 @@ notes are only headlines: pressing **Learn more** on one forks a fresh
 explanation against the conversation as it stands now, not the one captured
 when the note was queued. Typing past an offer drops the rest of the backlog,
 and turning suggestions off clears it.
+
+`turnEnd` needs `backlog` to surface more than one note per turn: the first note
+is shown immediately, the extra passes run in the background, and their notes
+wait in the backlog labeled **Another note · found just now**. Without a backlog
+it stays at one note per turn. If you close the first note while an extra pass is
+still running, the queued note appears as soon as it lands instead of waiting for
+another action. If another turn finishes while a check or its drain is still in
+flight, that turn's check is retried once the current one settles instead of
+being dropped.
 
 ## Use
 
@@ -194,6 +211,25 @@ The plugin stores only plain JSON under its own `$.store` keys (`sessions`,
 `seen`, `known`, `typedPastInARow`, `looksToSkip`) and one `$.state` value
 (`aboutOpen`). No files are read or written by the mod.
 
+### Parallel sessions
+
+The store is plugin-level, so `seen`, `known`, `typedPastInARow` and
+`looksToSkip` are shared by every session on the machine. This is the built-in
+mod's behavior and is kept unchanged:
+
+- **Knew this already** in one session adds the topic to `known` everywhere, so
+  another session will not propose it even if you never saw it there.
+- Typing past an offer twice in one session raises the shared skip counter
+  (`looksToSkip`, at most 16 checks); every session then checks less often,
+  which can look like the plugin went quiet.
+- Session rows, the opt-in `backlog` queue and `aboutOpen` are per session; they
+  are not shared or read across sessions.
+
+When several worktrees run at once, press **Knew this already** only in the
+session where you actually read the note. If suggestions seem to have stopped,
+the shared `looksToSkip` counter is the first thing to inspect in the plugin
+store.
+
 ## Differences from the built-in mod
 
 | Area | Built-in `cc-plugin-you-should-know` | `sidelens` |
@@ -206,6 +242,7 @@ The plugin stores only plain JSON under its own `$.store` keys (`sessions`,
 | Extra API | — | `settings.read`, only for that detection |
 | Auto-send option | — | `userConfig.autoSend`, off by default; sends the note when the explanation appears, without the Chat press |
 | Backlog option | — | `userConfig.backlog`, off by default; queues up to 3 earlier notes while an explanation waits, labeled with their age |
+| Cadence option | — | `userConfig.checkCadence`, default `fixed`; `turnEnd` checks once per completed turn. Ignored while autoSend is on |
 | Everything else | — | Ported unchanged |
 
 The compliance exclusions cannot be read through the public mods API. If your

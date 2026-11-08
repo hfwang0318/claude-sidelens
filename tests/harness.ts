@@ -61,9 +61,9 @@ export function install(
     return { value: undefined }
   })
   on('ui.render', options.uiRender ?? (() => ({ type: 'Text', props: {}, children: ['engine'] })))
-  on('model.fork', (_$: unknown, e: { prompt: string }) => {
+  on('model.fork', async (_$: unknown, e: { prompt: string }) => {
     forks.push(e)
-    if (options.fork) return { value: options.fork(e) }
+    if (options.fork) return { value: await options.fork(e) }
     return {
       value: {
         isAnswered: true,

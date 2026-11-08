@@ -116,6 +116,9 @@ skip = !(index > 0 && index % 6 === 0)
   的建议；
 - 子 agent（`e.agentId !== undefined`）直接跳过。
 
+`sidelens` 的可选 `checkCadence: "turnEnd"` 不走上面第 1 条的 6 步门控，而是在
+`turn.step` 的 `stopReason` 表明回合结束时检查一次；见 §3.8。默认 `fixed` 与官方一致。
+
 检查是**后台异步**的：hook 先 `yield* next(e)` 让当前 model step 继续流式返回，再在后台
 `$.model.fork(...)`。官方用 `inFlight` Map 按 session 去重，保证同一 session 同时只有一次检查。
 
@@ -237,6 +240,10 @@ call，其他新增 call 仍失败。
   `looksToSkip` 退避；`turn_off` 和 `session.end` 也清空；
 - 队列中的 line 会合并进 `proposePrompt` 的 `seen` 参数做去重，但只有真正展示时才
   写入官方 `seen`；
+- backlog 队列、`promptSeq`、session row 和 `aboutOpen` 按 session 存；但
+  `seen` / `known` / `typedPastInARow` / `looksToSkip` 是插件级 store，所有 session
+  共享（官方行为，为 parity 保留）。因此并行会话里，一个会话的 `Knew` 或 type-past
+  会影响其他会话；backlog 只解决“本条消息是否有积压”，不解决跨会话抑制；
 - 出队刻意绕过 `isOfferDue` 的同 turn 规则，由 TTL 控制新鲜度——这是 backlog 的核心
   intentional difference；
 - 遥测：入队时**不发**官方 `you_should_know_proposed`，只发项目专属
@@ -246,6 +253,40 @@ call，其他新增 call 仍失败。
 - `you_should_know_backlog` 的 `shown` / `dropped_ttl` / `dropped_ignored` /
   `dropped_off` / `dropped_session_end` 带 `wait_ms` / `age_ms` / `depth`，
   是评估 backlog 实际使用量的准确口径；
+- 不新增 hook、`$` 调用、env 或 state 键，scan 仍是 6 hooks / 19 calls。
+
+### 3.8 checkCadence（用户要求的额外能力）
+
+官方固定每 6 个 model step 检查。这个模式有两个结构性问题：短回合不到 6 步永远
+不检查；长回合的第 6/12… 步可能还在工具序列中间，建议基于未完成的工作，后续步骤
+可能已经补完。
+
+- manifest 声明 `userConfig.checkCadence`（string，`options: ["fixed", "turnEnd"]`，
+  默认 `fixed`）；`fixed` 与官方完全一致；
+- `turnEnd` 不新增 hook：`turn.step` 是流式事件，`yield* next(e)` 的结果带
+  `stopReason`。`isTurnEnd()` 接受 `end_turn` / `max_tokens` / `stop_sequence` /
+  `refusal`；`tool_use` / `pause_turn` / `compaction` / `null` 继续等待；
+- `runStep(sid, surfaces, { atEnd, allowCheck })`：turnEnd 模式下，每个 step 的
+  常规调用只维护状态（survival、backlog 过期、`promptSeq`），`allowCheck: false`；
+  回合结束时用 `atEnd: true` 检查一次；
+- 单步回合的 index 是 0；`atEnd` 检查跳过 turn-start survival 逻辑，避免在
+  检查前 return；下一回合开始时 survival 照常执行；
+- **与 `autoSend` 互斥，`autoSend` 优先**：autoSend 把笔记作为新 prompt 提交，
+  这本身是一个新回合；若不互斥，新回合结束会再次检查，形成链式发送；
+- 所有官方门控（view、`offeredTurn`、`isBandWatched`、`looksToSkip`、backlog）不变；
+- **drain（需要 `backlog`）**：第一次检查找到内容后，把它放进 `seen` 再问，
+  最多 `TURN_DRAIN_MAX = 3` 条；第一次结果立即展示，后续 pass 在后台运行，
+  额外条目入 backlog，并带 `drain: true`，出队时标签为
+  `Another note · found just now`（普通积压项仍是 `Earlier note`）；
+- drain 在某次返回 `none`、backlog 已满或达到 3 条时停止；只有第一次有结果才继续；
+- drain 每次入队后调用 `popBacklogIfIdle`：当前没有打开的面板时立即弹出队首，
+  避免“用户先关掉第一条、补查后才入队”导致第二条一直留在队列；
+  `advanceBacklog` 也会拒绝覆盖已经打开的面板；
+- `atEnd` 检查遇到 `inFlight`（当前 check 或 drain 未结束）不丢弃：`pendingDue`
+  保存该 hook 调用自己的 retry 闭包（捕获本回合 `e`），当前任务 finally 后重试；
+  后到的回合覆盖 pending，`session.end` 清除；
+- 遥测：官方 `proposed` 增加可选 `trigger: "turnEnd"` 和 `pass: 2/3`；
+  队列项延后发出的 proposed 也带这些字段；
 - 不新增 hook、`$` 调用、env 或 state 键，scan 仍是 6 hooks / 19 calls。
 
 ## 4. UI 结构
@@ -380,9 +421,10 @@ $.model.fork (forkprobe): 6355ms, 1 replies
 | 18 个 `$` calls | 同 18 个 | validate 输出逐项一致 |
 | `proposePrompt` / `explainPrompt` | 原文保留 | 字节级 |
 | `parseProposedLine` / `parseExplanation` | 逐行移植 | 相同的 none/parse_failed/deduped/stale |
-| 6 步节奏 / 2 次 prompt / 20s | 相同 | 常量一致 |
+| 6 步节奏 / 2 次 prompt / 20s | 相同 | 常量一致；可选 `checkCadence: "turnEnd"` 是在此之上的扩展 |
+| `userConfig` | 无 | `autoSend` / `backlog` / `checkCadence` 三个 opt-in 扩展 |
 | 终端/桌面布局 | 相同 | 星号列、hotkey、hover 卡片、fit 逻辑 |
-| `seen`/`known`/`sessions`/`typedPastInARow`/`looksToSkip` | 相同 | store schema 一致 |
+| `seen`/`known`/`sessions`/`typedPastInARow`/`looksToSkip` | 相同 | store schema 一致；`seen`/`known`/`typedPastInARow`/`looksToSkip` 是插件级共享状态，`sessions` 内部按 session 分行 |
 | `aboutOpen` state | 相同结构 | plugin 名改为 sidelens |
 | 遥测事件名/字段 | 相同 | `you_should_know_*`、`learn_explain`、`learn_page` |
 | 禁用命令 | `/plugin disable sidelens` | 外置插件的实际名字 |
@@ -459,7 +501,7 @@ $ claude plugin validate .
 
 ### 9.2 行为测试（`claude plugin test`）
 
-28 个行为/纯函数测试覆盖（另有 §9.5 的 13 个官方差分测试）：
+39 个行为/纯函数测试覆盖（另有 §9.5 的 13 个官方差分测试）：
 
 1. 三方 model 的 fork 产生 offer，band 文本/按钮正确，Learn more 进入解释；
 2. 第 6 步才检查，重复建议 dedupe；
@@ -486,9 +528,22 @@ $ claude plugin validate .
 24. 3 个 prompt 后队列项过期并记 `dropped_ttl`；
 25. 连续 type-past 清空 backlog 并记 `dropped_ignored`；
 26. `autoSend` 开启时 backlog 不生效；
-27–28. backlog 纯函数：`liveBacklog` / `withoutBacklogLine`、`backlogLabel`。
+27–28. backlog 纯函数：`liveBacklog` / `withoutBacklogLine`、`backlogLabel`；
+29. `isTurnEnd` 只接受结束回合的 `stopReason`；
+30. `turnEnd`：单步回合在结束时检查一次；
+31. `turnEnd`：`tool_use` 步不检查，等到结束步再检查；
+32. `fixed` 默认仍忽略单步回合；
+33. `autoSend` 与 `turnEnd` 互斥，`autoSend` 优先；
+34. `turnEnd` + backlog：第一条立即展示，drain 到 3 条，额外条目入队并标
+    `Another note`，延后的 proposed 带 `pass: 2`；
+35. 第一次检查返回 `none` 时不再 drain；
+36. 没有 backlog 时 `turnEnd` 只取一条；
+37. 第一条面板在补查期间关闭时，补查入队后立即弹出队首；
+38. 补查占锁期间下一回合结束，其检查在锁释放后重试，而不是被丢弃；
+39. 全部开关关闭：仍只在第 6/12/18 步检查，不写 backlog/promptSeq，
+    不出现 queued/trigger/pass 遥测。
 
-结果：全部测试文件合计 `60 pass, 0 fail`。
+结果：全部测试文件合计 `71 pass, 0 fail`。
 
 ### 9.3 真实 provider 验证
 
