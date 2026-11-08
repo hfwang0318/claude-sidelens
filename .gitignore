@@ -15,4 +15,5 @@ eval/cases/
 # Generated corpora and reports (never commit supervisor-derived transcripts)
 eval/synth/
 eval/control/
+eval/real-cases/
 eval/report/

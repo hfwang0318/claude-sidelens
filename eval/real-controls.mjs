@@ -8,7 +8,7 @@
 //
 //   node eval/real-controls.mjs [--limit N] [--dir ~/.claude/projects]
 
-import { readdir, readFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { extractLedger, finalTextOf, messageOf } from '../lib/ledger.js'
@@ -20,7 +20,10 @@ const value = (flag, fallback) => {
   return at === -1 ? fallback : args[at + 1]
 }
 const root = value('--dir', join(homedir(), '.claude/projects'))
+const resolveValue = (path) => (path.startsWith('/') ? path : join(process.cwd(), path))
 const limit = Number(value('--limit', '0')) || 0
+const outDir = value('--out', '')
+const keep = Number(value('--keep', '0')) || 0
 
 const files = []
 for (const project of await readdir(root, { withFileTypes: true }).catch(() => [])) {
@@ -49,6 +52,7 @@ const turnsOf = (entries) => {
   return turns
 }
 
+const cases = []
 let scanned = 0
 let withWork = 0
 let claimed = 0
@@ -78,6 +82,15 @@ for (const file of files.sort()) {
     withWork += 1
     const finalText = finalTextOf(turn.messages)
     if (finalText === '') continue
+    if (outDir !== '' && (keep === 0 || cases.length < keep)) {
+      cases.push({
+        id: `${file.split('/').at(-1).replace('.jsonl', '')}-${scanned}`,
+        request: turn.request,
+        ledger,
+        finalText,
+        origin: 'real',
+      })
+    }
     const claims = claimSubjects(finalText)
     const findings = verifyClaims(finalText, ledger)
     if (claims.tests.length === 0 && claims.files.length === 0) {
@@ -92,6 +105,12 @@ for (const file of files.sort()) {
   }
 }
 
+if (outDir !== '') {
+  const target = resolveValue(outDir)
+  await mkdir(target, { recursive: true })
+  for (const item of cases) await writeFile(`${target}/${item.id}.json`, JSON.stringify(item, null, 1))
+  console.log(`wrote ${cases.length} real cases to ${target}`)
+}
 console.log(`files ${files.length}  turns ${scanned}  turns with work ${withWork}`)
 console.log(`turns claiming nothing checkable: unmeasured  violations: ${violated}`)
 console.log(`turns with a checkable claim: ${claimed}  fired: ${fired} (${claimed === 0 ? 'n/a' : ((fired / claimed) * 100).toFixed(1) + '%'})`)
